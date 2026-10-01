@@ -1,0 +1,27 @@
+# Rust build output
+target/
+
+# Defensive frontend-tool output patterns. UI builds still belong outside this tree.
+node_modules/
+dist/
+.vite/
+
+# Optional Python plugins
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and runtime evidence
+.env
+.env.*
+!.env.example
+/runtime/
+/artifacts/
+
+# Operating system metadata
+.DS_Store
+Thumbs.db

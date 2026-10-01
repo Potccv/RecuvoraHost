@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "monitors": [
+    {
+      "id": "monitor-001",
+      "target_id": "target-001",
+      "source_id": "source-001",
+      "extension_id": "observation-extension",
+      "contract": "com.example.observation",
+      "version": 1,
+      "method": "observe",
+      "params": {},
+      "interval_ms": 30000,
+      "timeout_ms": 5000,
+      "stale_after_ms": 90000,
+      "startup_grace_ms": 60000,
+      "rule": {
+        "pointer": "/ready",
+        "operator": "eq",
+        "value": true,
+        "failure_samples": 3,
+        "success_samples": 3
+      }
+    }
+  ]
+}

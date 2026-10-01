@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "harness_config": "./harnesses.json",
+  "extensions_config": "./extensions.json",
+  "execution_workspace": { "node_id": "harness-node", "workspace_id": "work" },
+  "reviewer_workspace": { "node_id": "harness-node", "workspace_id": "review" },
+  "execution_harness": "harness-external",
+  "target_id": "example-target",
+  "target_root": "./target-copy",
+  "reviewer_directory": "./review-context",
+  "data_dir": "./repair-state",
+  "allowed_files": ["settings.txt"],
+  "policy": {
+    "id": "example-text-repair",
+    "version": 1,
+    "reviewer": { "mode": "harness", "harness_id": "harness-external" },
+    "delegation": "Only approve text changes to the explicitly allowed target files that directly implement the user's current repair request. Escalate if the requested change or its authorization is uncertain. Do not authorize publishing, command execution, installation, credentials, or changes to RecuvoraCore, the embedding application, or approval policy.",
+    "allowed_targets": ["example-target"],
+    "allowed_action_kinds": ["replace_text"],
+    "ttl_secs": 600
+  },
+  "timeout_secs": 180,
+  "max_tool_calls": 16
+}

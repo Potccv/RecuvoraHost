@@ -1,0 +1,97 @@
+# HTTP API v1
+
+`recuvora-host serve`提供带Bearer认证的核心服务映射。HTTP与CLI直接编译，不需要server或web-ui feature；本应用不嵌入页面，可选择托管外部ui_dir。UI是否连接不影响后台服务生命周期。
+
+## 启动与身份
+
+```powershell
+cargo run --locked -- serve --config $env:RECUVORA_SERVER_CONFIG
+```
+
+ServerConfig的schema_version为1，listen只接受回环地址。token_file、data_dir及非空能力配置/UI路径必须是源码外绝对路径；状态目录、令牌及所需文件在启动前准备。最小占位模板见[server profile](../profiles/server.example.json)，字段解释见[配置说明](configuration.md)。服务配置本身也放源码外。
+
+令牌为独立随机生成的32至256字节可打印非空格ASCII秘密，文件可带末尾换行。请求使用`Authorization: Bearer ...`，operator从服务配置绑定，不能由请求正文指定。当前为单操作员模式，没有多用户账户或OAuth。令牌文件不进入源码、UI构建或日志。
+
+API请求验证准确Origin：同源允许，跨来源必须匹配allowed_origins，不接受通配符。OPTIONS预检不执行业务；来源通过后业务请求仍需Bearer。跨机访问由部署方提供TLS代理或受控转发，Host本身不直接绑定公网。
+
+可配置权限为 harness.run、harness.projects、repair.run、approval.decide、approval.apply、approval.check_result、simulation.run、logs.read、operation.cancel、extension.read、monitor.read、incident.read、incident.acknowledge、recovery.read、recovery.decide、recovery.resume、recovery.check_result、knowledge.read。未知权限拒绝启动，按需要缩减；节点调用白名单和实际审批许可还会独立核验。恢复流程自动调度由可信配置启用，HTTP 权限只控制操作员访问和人工管理，不替代恢复流程内的审批规则与执行许可。
+
+## 静态客户端
+
+ui_dir为空时页面路由返回404。配置后启动加载固定14份官方静态文件为内存快照，只提供这些名称；未知名称、路径穿越或目录浏览不被提供。单文件2 MiB、总计8 MiB，拒绝链接/reparse point。目录及文件是可信部署输入，没有安装包/manifest签名验证，不向网页提供目录内其它文件。
+
+页面及静态文件不需要API令牌，以便展示认证页；`/api/v1`仍经过认证。页面更新需重启服务，服务不会自行构建、更新或安装UI。ui_dir加入修复保护范围。独立Web/Desktop也可以不配置ui_dir而直接连接API，需按实际来源配置CORS。
+
+## 资源
+
+下表路径均以`/api/v1`为前缀。JSON请求正文上限128 KiB；错误响应含error.code、error.message和auto_retry:false。
+
+| 方法与路径 | 内容 |
+| --- | --- |
+| `GET /bootstrap` | schema_version 1的runtime、permissions、capabilities、harnesses、配置、监控及历史首批摘要 |
+| `GET /repairs`、`/approvals`、`/operations`、`/simulations` | 摘要分页与筛选，items、next_cursor、total、limit、order |
+| `GET /repairs/{id}`、`/approvals/{id}` | 单条完整回复、操作、证据与规则 |
+| `GET /harness/{id}/projects` | workspace_id对应的 AI 服务提供方项目，失败不冒充空列表 |
+| `POST /harness/{id}/runs` | operation_id、workspace_id、prompt、visibility、project_id、model、timeout_secs |
+| `POST /repairs/runs` | operation_id、task_id、prompt；可选成对incident_id与incident_revision |
+| `POST /approvals/{id}/{approve,deny,revoke,apply,check_result}` | revision、reason；批准、执行及只读结果核实分别授权 |
+| `POST /simulations` | operation_id、task_id、target、scenario、timeout_ms，仅模拟测试 |
+| `GET /operations/{id}` | 已接受请求状态与结果 |
+| `POST /operations/{id}/cancel` | 请求取消，仍需读取最终状态 |
+| `GET /logs` | level、source、task_id、operation_id、query、cursor、limit |
+| `POST /extensions/{id}/query` | contract、version、method、params，调用获准的只读接口 |
+| `GET /monitors`、`/monitors/{id}` | 监控与发现摘要、详情；要求monitor.read |
+| `GET /monitoring/plugins/{id}` | 宿主通用监控和受限插件描述；专属读取额外要求extension.read |
+| `GET /ui/catalog` | 经权限过滤的声明式插件 view 目录 |
+| `GET /ui/plugins/{plugin_id}/views/{view_id}` | Host 校验并包装的只读 view 文档；当前实现 `monitoring_v1` |
+| `GET /monitors/{id}/logs` | 配置绑定的观测记录流；要求monitor.read、logs.read和extension.read |
+| `GET /incidents`、`/incidents/{id}` | 故障摘要与完整证据；要求incident.read |
+| `POST /incidents/{id}/acknowledge` | revision、note；要求incident.read与incident.acknowledge |
+| `GET /recovery/status` | 恢复流程调度器的 running 与 last_error；要求 recovery.read |
+| `GET /recovery/tasks` | Core 任务摘要分页；要求 recovery.read |
+| `GET /recovery/tasks/{id}` | RecoveryTask 任务详情，包含完整方案、操作和独立证据；要求 recovery.read |
+| `GET /recovery/tasks/{id}/approval` | 原始 Core ApprovalRecord，无审批时 record:null；要求 recovery.read |
+| `POST /recovery/tasks/{id}/decision` | 审批 revision、decision:approve/deny/escalate、reason；要求 recovery.read 与 recovery.decide |
+| `POST /recovery/tasks/{id}/resume` | 任务 revision；要求 recovery.read 与 recovery.resume |
+| `POST /recovery/tasks/{id}/check_result` | operation_id、任务 revision；要求 recovery.read 与 recovery.check_result；异步读取节点证据 |
+| `POST /recovery/knowledge/search` | conditions、可选 keywords、limit:1–100；只读，要求 knowledge.read |
+
+## Core 恢复流程接口
+
+recovery_config 显式启用恢复流程；未配置的资源返回 503，无访问权限返回 403，未知任务返回 404。`/recovery/tasks` 使用共同 cursor、limit、state、query、task_id 参数，state 保留 Core snake_case 阶段；任务详情由 Core 记录生成；`result_check` 保存核实结果，执行证据中的 `checked_at_ms` 为核实时刻。审批使用完整 Core 类型。未获取完整操作和规则前不能批准。
+
+decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revision 是 RecoveryTask.revision。actor 由可信 operator 绑定，请求不能提供身份、验收或执行事实。过期、revision/状态冲突返回 409。JSON 结构拒绝返回 422，语义无效返回 400，存储或服务不可用返回 503；均使用共同错误格式。已返回 202 的异步节点查询失败写入 operation.error，客户端需读取操作结果。
+
+人工决定与 resume 在成功保存到磁盘后返回记录，auto_retry:false。决定自身不执行动作；已启用的恢复流程调度器在后续轮次继续处理获准任务。resume 仅恢复 paused（暂停）任务；Unknown（未知执行结果）必须先核实。check_result 先保存稳定 operation_id，返回 202，再从绑定节点分别获取原执行状态和业务验收。客户端用 `/operations/{id}` 读取结果，任何回执未知都不自动重复 POST。节点不支持只读 reconcile 或证据不兼容时，不重复执行脚本。
+
+修复经验搜索是只读 POST，不创建 operation。conditions 为 1–32 项准确条件，keywords 最多 32 项，limit 为 1–100；匹配规则由 Core KnowledgeQuery 决定。结果仅包含适用、已验证且脚本版本未被隔离的 KnowledgeRecord，保留候选、状态、脚本及案例，不能据此取得执行权限。核实未知执行结果不会自动解除脚本版本隔离。
+
+恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 保留旧文本修复兼容视图，不混入新恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](recovery.md)。
+
+## 接受、结果与重复请求
+
+异步请求先将 operation_id 保存到磁盘，再返回`202 {operation_id,auto_retry:false}`。客户端应先生成稳定关联ID，回执丢失只用GET核验；重复ID返回409且不再次派发，ID未找到也不是外部动作从未发生的通用证据。
+
+操作状态为running、completed、failed、canceled或unknown，时间使用Unix毫秒。completed只表示服务调用结束，仍须读取result：待人工、模拟失败和文件读回都不能转换为业务恢复成功。已派发后超时、断连或进程终止保留Unknown，重启不自动重放。
+
+HTTP应用日志与Core审批/故障记录分别承担传输接收和业务判定责任。请求取消不等于执行者已经停止；停止服务会请求通知被调用方取消、等待在途结果并等待相关服务完成当前任务。外部动作与回执写盘不是同一事务，不承诺精确一次。
+
+## 分页、审批与故障
+
+摘要默认每页25条，limit允许1至100，游标按不可变ID降序继续。初始化历史只读首批，不含完整规则、文件全文、完整模型回复或获准动作，不能据摘要批准。审批待处理队列独立于已结束历史，全局计数来自服务统计，不按当前页长度推断。
+
+人工决定、执行及未知执行结果核实在审批存储服务的同步锁内核验 revision，冲突返回409，客户端必须重新读取完整详情。旧文本流程批准仅记录决定，apply 显式执行；自动恢复流程由显式启用的恢复流程调度器在批准后继续调度。check_result 查询证据并保存核实结果，不重做动作。Unknown目标阻断冲突执行，参数或UI状态不能绕过规则。
+
+故障确认独立返回保存在磁盘上的记录，不创建通用执行operation。acknowledged只表示已知悉，resolved只表示异常条件解除，二者都不授权修复或证明业务恢复。确认须携带当前revision，actor由服务绑定，未知回执不可自动重复POST。
+
+修复请求可显式关联incident_id和incident_revision，需repair.run与incident.read，并校验故障目标与固定修复目标、规则一致。接受时保存大小受限的来源快照，后续故障变化不改写历史。关联不确认/解除故障，也不会由监控自动派发修复。
+
+## 只读视图与记录
+
+插件监控通过通用 UI catalog/view GET 接口读取；旧 monitoring 路径保留兼容。专属描述须登记并满足权限、schema和限额，失败以独立状态降级，不加载插件HTML、脚本或资源。插件描述不能覆盖Core健康、授权或恢复事实。
+
+log_sources由可信配置限定提供方、方法、monitor_contract、固定参数/参数绑定、游标和字段映射。请求只选择已登记monitor，不允许浏览器选择任意方法或参数。普通记录和错误记录按服务配置的error_levels/error_events分类，不从文本猜测业务含义。
+
+目标记录流每页1至32条，游标由服务关联目标、来源与连续性；失效或来源变化要求明确重读，不静默跳过。此接口不会推进监控引擎保存的读取位置，也不是原始日志上传入口。所有查询都限制返回数量与数据大小，错误不伪装成空数据。
+
+接口约定检查范围见[测试说明](../tests/README.md)。真实节点、跨机网络、浏览器/Tauri交互及业务恢复仍需部署验收。

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    {
+      "id": "harness-node",
+      "kind": "node",
+      "enabled": true,
+      "endpoint": {
+        "url": "http://127.0.0.1:8090/recuvora"
+      },
+      "namespaces": [],
+      "allow_calls": [
+        {"contract": "recuvora.harness", "version": 1, "method": "run"},
+        {"contract": "recuvora.harness", "version": 1, "method": "projects"},
+        {"contract": "recuvora.harness", "version": 1, "method": "create_project"}
+      ],
+      "allow_nodes": []
+    },
+    {
+      "id": "target-node",
+      "kind": "node",
+      "enabled": true,
+      "endpoint": {
+        "url": "http://127.0.0.1:8091/recuvora"
+      },
+      "namespaces": [],
+      "allow_calls": [
+        {"contract": "recuvora.repair", "version": 1, "method": "inspect"},
+        {"contract": "recuvora.repair", "version": 1, "method": "execute_script"},
+        {"contract": "recuvora.repair", "version": 1, "method": "verify"}
+      ],
+      "allow_nodes": []
+    }
+  ]
+}

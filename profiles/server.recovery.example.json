@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "listen": "127.0.0.1:7431",
+  "token_file": "<absolute-token-file>",
+  "operator": "host-operator",
+  "permissions": ["recovery.read", "recovery.decide", "recovery.resume", "recovery.check_result", "knowledge.read", "monitor.read", "incident.read", "incident.acknowledge", "logs.read", "operation.cancel"],
+  "allowed_origins": [],
+  "data_dir": "<absolute-console-state-directory>",
+  "harness_config": "<absolute-harness-configuration>",
+  "extensions_config": "<absolute-network-extensions-configuration>",
+  "repair_config": null,
+  "monitors_config": "<absolute-monitor-configuration>",
+  "recovery_config": "<absolute-recovery-configuration>",
+  "log_sources": [],
+  "ui_dir": null
+}

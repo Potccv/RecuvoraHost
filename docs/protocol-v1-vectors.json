@@ -1,0 +1,26 @@
+{
+  "protocol_version": 1,
+  "valid": [
+    {"type":"hello","protocol_version":1,"expected_id":"example-node","kind":"node"},
+    {"type":"hello","protocol_version":1,"expected_id":"example-plugin","kind":"plugin"},
+    {"type":"ready","protocol_version":1,"id":"example-node","kind":"node","contracts":[{"id":"com.example.observation","version":1,"methods":[{"name":"query","read_only":true,"input_schema":{"type":"object"},"output_schema":{"type":"object"}}]}],"capabilities":[],"workspaces":["default"]},
+    {"type":"call","id":"call-001","contract":"com.example.observation","version":1,"method":"query","params":{"target_key":"target-001"},"timeout_ms":30000},
+    {"type":"callback","id":"callback-001","parent_id":"call-001","method":"service.call","params":{"query":"status"}},
+    {"type":"result","id":"callback-001","result":{"entries":[]}},
+    {"type":"result","id":"call-001","result":null},
+    {"type":"error","id":"call-001","code":"denied","message":"outside scope","outcome":"rejected"},
+    {"type":"error","id":"call-001","code":"lost_receipt","message":"execution may have started","outcome":"unknown"},
+    {"type":"error","id":"call-001","code":"cancelled","message":"cancelled before dispatch","outcome":"cancelled"},
+    {"type":"cancel","id":"call-001"}
+  ],
+  "invalid": [
+    {"type":"not-a-message"},
+    {"type":"hello","protocol_version":1,"expected_id":"example-node","kind":"service"},
+    {"type":"hello","protocol_version":1,"expected_id":"example-node","kind":"node","unexpected":true},
+    {"type":"call","id":"call-001","contract":"com.example.observation","version":1,"method":"query","params":{},"timeout_ms":-1},
+    {"type":"callback","id":"callback-001","method":"service.call","params":{}},
+    {"type":"error","id":"call-001","code":"lost","message":"unknown","outcome":"failed"},
+    {"type":"cancel","id":"call-001","unexpected":true},
+    {"type":"ready","protocol_version":1,"id":"example-node","kind":"node","contracts":[],"capabilities":null}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    {
+      "id": "harness-node",
+      "kind": "node",
+      "enabled": true,
+      "endpoint": {
+        "url": "wss://node.example.invalid/recuvora",
+        "bearer_token_env": "RECUVORA_NODE_TOKEN"
+      },
+      "namespaces": [],
+      "allow_calls": [
+        {"contract": "recuvora.harness", "version": 1, "method": "run"},
+        {"contract": "recuvora.harness", "version": 1, "method": "projects"},
+        {"contract": "recuvora.harness", "version": 1, "method": "create_project"}
+      ],
+      "allow_nodes": []
+    }
+  ]
+}

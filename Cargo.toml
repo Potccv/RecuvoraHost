@@ -1,0 +1,127 @@
+[package]
+name = "recuvora-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+default-run = "recuvora-host"
+autobins = false
+autotests = false
+description = "CLI and authenticated HTTP application host for Recuvora Core"
+
+[features]
+dev-check = []
+
+[dependencies]
+recuvora-core = { path = "../RecuvoraCore", version = "0.1.0" }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal", "net"] }
+axum = "=0.8.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+fs2 = "=0.4.3"
+thiserror = "2.0"
+futures-util = { version = "0.3", features = ["sink"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "stream", "rustls-no-provider"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "1"
+
+[target.'cfg(windows)'.dependencies]
+winapi-util = "=0.1.11"
+filepath = "=0.2.0"
+
+[build-dependencies]
+toml = "0.9"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["test-util", "process"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "recuvora-host"
+path = "src/main.rs"
+
+[[bin]]
+name = "recuvora-host-check"
+path = "scripts/windows/check.rs"
+test = false
+required-features = ["dev-check"]
+
+[[test]]
+name = "check_script"
+path = "tests/check_script.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[[test]]
+name = "protocol"
+path = "tests/protocol.rs"
+
+[[test]]
+name = "server_logs"
+path = "tests/server_logs.rs"
+harness = false
+
+[[test]]
+name = "recovery_scheduler"
+path = "tests/recovery_scheduler.rs"
+
+[[test]]
+name = "recovery_incident_guard"
+path = "tests/recovery_incident_guard.rs"
+
+[[test]]
+name = "extensions"
+path = "tests/extensions.rs"
+harness = false
+
+[[test]]
+name = "remote_harness"
+path = "tests/remote_harness.rs"
+harness = false
+
+[[test]]
+name = "repair_backend"
+path = "tests/repair_backend.rs"
+harness = false
+
+[[test]]
+name = "monitor_wire"
+path = "tests/monitor_wire.rs"
+harness = false
+
+[[test]]
+name = "network_transport"
+path = "tests/network_transport.rs"
+
+[[test]]
+name = "transport_configuration"
+path = "tests/transport_configuration.rs"
+
+[[test]]
+name = "monitors"
+path = "tests/monitors.rs"
+
+[[test]]
+name = "runtime"
+path = "tests/runtime.rs"
+
+[[test]]
+name = "harnesses"
+path = "tests/harnesses.rs"
+
+[[test]]
+name = "recovery"
+path = "tests/recovery.rs"
+
+[[test]]
+name = "process_recovery"
+path = "tests/process_recovery.rs"

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "default_harness": "harness-external",
+  "harnesses": [
+    {
+      "id": "harness-external",
+      "adapter": "remote-node",
+      "address": "node://harness-node",
+      "enabled": true,
+      "workspace_roots": ["work", "review"]
+    }
+  ]
+}

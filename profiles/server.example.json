@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "listen": "127.0.0.1:7431",
+  "token_file": "<absolute-token-file>",
+  "operator": "host-operator",
+  "permissions": ["simulation.run", "logs.read", "operation.cancel"],
+  "allowed_origins": [],
+  "data_dir": "<absolute-state-directory>",
+  "harness_config": null,
+  "extensions_config": null,
+  "repair_config": null,
+  "monitors_config": null,
+  "recovery_config": null,
+  "log_sources": [],
+  "ui_dir": null
+}
