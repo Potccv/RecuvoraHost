@@ -1,7 +1,7 @@
 //! Restricted plugin callbacks into explicitly allowed read-only node services.
 use super::ExtensionRegistry;
 use super::{CallbackFuture, CallbackHandler, ExtensionError, ExtensionKind};
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use serde::Deserialize;
 use serde_json::Value;
 

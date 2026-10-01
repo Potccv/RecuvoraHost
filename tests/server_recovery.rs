@@ -1,6 +1,6 @@
 use super::*;
 use crate::integrations::recovery::*;
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use recuvora_core::recovery::approval::ReviewerConfig;
 use recuvora_core::recovery::knowledge::ScriptArtifact;
 

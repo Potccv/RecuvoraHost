@@ -1,14 +1,14 @@
 //! Source-fault provenance persists without granting approval or dispatching a repair.
 use super::{AUTH, call, config};
-use crate::repair::{RepairConfig, now};
-use crate::server::{Console, monitoring::repair_source_incident, router, timestamp};
-use recuvora_core::recovery::approval::{
+use crate::persistence::approval::{
     ApprovalPolicy, ApprovalStore, ApprovalStoreConfig, ReviewerConfig,
 };
-use recuvora_core::recovery::incidents::{
+use crate::persistence::incidents::{
     IncidentKind, IncidentSignal, IncidentStore, IncidentStoreConfig, MonitorCommit,
     SignalCondition,
 };
+use crate::repair::{RepairConfig, now};
+use crate::server::{Console, monitoring::repair_source_incident, router, timestamp};
 use serde_json::json;
 
 #[tokio::test]

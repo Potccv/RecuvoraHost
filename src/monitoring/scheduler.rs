@@ -1,9 +1,9 @@
 //! Single-in-flight observation polling with independent freshness checks.
-use super::shared::{Shared, lock, worker_finished};
+use super::shared::{Shared, worker_finished};
 use super::state::MonitorState;
 use super::support::DISCOVERY_INVALIDATED;
 use super::{Coverage, MonitorError, ObservationSource, TargetHealth};
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -31,7 +31,7 @@ pub(super) fn launch_monitor(
             view.running = false;
             view.health = TargetHealth::Unknown;
         }
-        worker_finished(&shared);
+        worker_finished(&shared).await;
     });
 }
 
@@ -55,7 +55,7 @@ async fn run_monitor(
             biased;
             _ = shared.cancellation.cancelled() => break,
             _ = ticks.tick() => {
-                let _registration = lock(&shared.registration)?;
+                let _registration = shared.registration.lock().await;
                 let current_epoch = source.observation_epoch();
                 let signals = if (current_epoch.is_none() && !source.observation_pending())
                     || (observed_epoch.is_some() && current_epoch != observed_epoch) {
@@ -89,11 +89,11 @@ async fn run_monitor(
                         _ = &mut deadline, if !timed_out => {
                             timed_out = true;
                             cancellation.cancel();
-                            let result = (|| {
-                                let _registration = lock(&shared.registration)?;
+                            let result = {
+                                let _registration = shared.registration.lock().await;
                                 let signals = state.coverage_failure("observation deadline elapsed".into(), Coverage::Unavailable);
                                 state.commit(&shared, signals)
-                            })();
+                            };
                             if let Err(error) = result {
                                 shared.fail(error.to_string());
                                 let _ = poll.await;
@@ -102,7 +102,7 @@ async fn run_monitor(
                         },
                         _ = ticks.tick() => {
                             let result = {
-                                let _registration = lock(&shared.registration)?;
+                                let _registration = shared.registration.lock().await;
                                 let signals = if source.observation_epoch() != epoch || epoch.is_none() {
                                     cancellation.cancel();
                                     state.coverage_failure(DISCOVERY_INVALIDATED.into(), Coverage::Unavailable)
@@ -119,7 +119,7 @@ async fn run_monitor(
                     }
                 };
                 let Some(result) = result else { break; };
-                let _registration = lock(&shared.registration)?;
+                let _registration = shared.registration.lock().await;
                 let current_epoch = source.observation_epoch();
                 let mut signals = if observed_epoch.is_some() && current_epoch != observed_epoch {
                     state.coverage_failure(DISCOVERY_INVALIDATED.into(), Coverage::Unavailable)

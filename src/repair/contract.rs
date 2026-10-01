@@ -25,7 +25,7 @@ pub struct RepairConfig {
 
 impl RepairConfig {
     pub fn validate(&self) -> Result<(), WorkflowError> {
-        self.policy.validate()?;
+        self.policy.validate().map_err(ApprovalError::from)?;
         for workspace in [&self.execution_workspace, &self.reviewer_workspace]
             .into_iter()
             .flatten()

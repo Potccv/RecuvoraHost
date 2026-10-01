@@ -14,6 +14,7 @@ mod remote_workspace;
 mod tools;
 mod validation;
 
+pub use crate::runtime::operation::Cancellation as HarnessCancellation;
 pub use config::{CONFIG_SCHEMA_VERSION, HarnessDefinition, HarnessRegistryConfig};
 pub use conversation::{
     ClientProjectGrouping, ConversationPlacement, ConversationVisibility, HarnessRole,
@@ -25,7 +26,6 @@ pub use provider::{
     HarnessAdapterFactory, HarnessProjectCreateFuture, HarnessProjectListFuture, HarnessProvider,
     HarnessRunFuture,
 };
-pub use recuvora_core::operation::Cancellation as HarnessCancellation;
 pub use registry::{HarnessRegistry, HarnessRegistryBuilder};
 pub use remote_workspace::RemoteWorkspace;
 pub use tools::{

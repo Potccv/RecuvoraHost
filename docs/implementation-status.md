@@ -1,71 +1,72 @@
 # 实现状态
 
-## 已实现
+当前 Host 使用 Core 0.2 公开的纯领域 API；持久化、取消监督、跨域编排和共享目标所有权由 Host 实现。HOST-001 与 HOST-002 已修复。HOST-003 的旧工作流与审批导入接口已补齐，Host 提供保留原所有权身份的离线安装流程。验证结果只覆盖下文实际运行的 Host 检查。
+
+## 已实现能力
 
 | 范围 | 能力 |
 | --- | --- |
-| 应用边界 | 单 Cargo 包、Core 公共接口与 Host 内置协议模块、配置安全准备、CLI、回环认证 HTTP |
-| 扩展与 Harness | ws/wss/http/https 四种连接方式/TLS、身份/schema/白名单、只读回调、独立执行与审核会话 |
-| 监控 | 只读轮询、规则、时效、覆盖、动态发现与向 Core 原子提交重启后仍保留的故障 |
-| 自动恢复 | 显式 recovery_config 与共享 ownership_dir、Core 原始任务/审批/修复经验类型、持久目标所有权绑定、恢复流程调度器、故障登记及执行前复核、节点 RepairBackend |
-| 恢复流程管理 | 运行状态、分页任务、详情/审批、人工决定、暂停恢复、根据节点证据核实未知执行结果、修复经验搜索 |
-| 兼容流程 | Windows 限制文件大小的文本修复、审批管理、模拟测试、应用操作回执与重启 Unknown |
-| 外部 UI | 固定资产内存快照、身份/权限、只读插件 catalog/view 和目标记录查询 |
+| 应用边界 | 单 Cargo 包、Core 公共领域接口、Host 协议模块、配置安全准备、CLI、回环认证 HTTP |
+| 持久化 | 可信配置与完整事务绑定、预期 revision 原子比较、提交 ID 内容冲突拒绝、同步后确认、文件身份/锁/容量保护、领域历史恢复 |
+| 扩展与 Harness | ws/wss/http/https、身份/schema/白名单、独立执行和审核容量、回调分类及 Unknown 保留、派发后无效结果不解释为可重试拒绝 |
+| 监控 | 只读轮询、规则、时效、覆盖、动态发现、故障与检查点同次持久提交 |
+| 自动恢复 | 显式配置、Host 后端与调度、Core 状态提案、审批消费和执行授权两次提交、共享目标所有权、独立验收与两阶段 Unknown 核实 |
+| 经验交付 | 按 Core created_revision 顺序交付、案例幂等、失败/Unknown 隔离事实先于知识保存、交付失败不重执行 |
+| 管理与兼容流程 | 恢复任务/审批/知识查询、认证人工决定、暂停恢复、绑定节点结果核实、受限 Windows 文本动作、模拟及持久应用回执 |
+| 旧数据导入 | 冻结完整来源，校验工作流、审批、故障和未压缩知识关联；保留原随机身份与共享归属，完整代次可靠保存后原子激活 |
+| 外部 UI | 固定资产快照、身份与权限、只读插件 catalog/view 和目标记录查询 |
 
-Core 当前只公开 operation 与 recovery。Host 不提供旧 CoreSettings、原始日志上传、任意脚本提交、节点启动、插件市场、配置热更新或线程续接。旧文本修复和新自动恢复流程有独立接口与状态目录。
+Core 顶层仅公开 operation 与 recovery。Host 不启动节点或提供方子进程，不提供原始日志上传、任意脚本提交、配置热更新或供应商线程续接。旧文本修复与自动恢复仍使用独立接口和状态目录。
 
-## 已知问题
+## 问题与迁移状态
 
-以下问题已通过源码检查和隔离回环节点复现，程序实现尚未修复。现有检查通过不能作为这些问题已经关闭的依据。P1 表示优先处理的结果语义问题，P2 表示需要补齐的契约边界。
+### HOST-001 · 已修复 · 回调 Unknown 分类和上层结果保留
 
-### HOST-001 · P1 · 回调结果未知被转换为拒绝
+[ExtensionClient](../src/integrations/extensions/client.rs) 保留回调 Rejected、Cancelled、Unknown 的 wire 分类；回调 Unknown 在当前调用内保持，节点后续普通 Result 或取消完成不能覆盖。回调监督失败、工具执行后超限或发送失败的回调回执、派发后的协议/连接/回执错误和不完整收尾维持 Unknown，不自动重放。[工具路由](../src/integrations/harness/callbacks.rs) 保留 Harness 不确定结果，派发后无法确认的工具输出错误不降为拒绝。
 
-**位置：** [ExtensionClient](../src/integrations/extensions/client.rs) 的 `call_inner`，以及 [Harness 工具路由](../src/integrations/harness/callbacks.rs) 的 `ToolRouter::call`。
+固定回归覆盖派发前取消/拒绝、工具 Unknown、回调监督失败、收尾等待与容量保留、Unknown 后顶层成功/取消及零重放；测试位于 [network_transport](../tests/network_transport.rs) 与 [remote_harness](../tests/remote_harness.rs)。
 
-`call_inner` 将回调处理器的所有错误发送为 `Message::Error { outcome: Rejected }`；工具路由也将所有 `HarnessError` 转成 `ExtensionError::Rejected`。因此 `Unknown` 与 `Cancelled` 的结构化分类在返回节点之前丢失。
+### HOST-002 · 已修复 · Harness 输入输出 schema
 
-**复现与影响：** 回调处理器返回 `Unknown`，说明 external action 已派发但回执丢失；回环节点实际收到的错误正文仍含结果未知，结构化 `outcome` 却是 `rejected`。节点随后返回顶层 `Result` 时，Client 仍可返回成功。提供方可能据此误判动作尚未开始并尝试重试；本次复现没有连接实际执行节点，也没有证明发生了重复动作。
+[Harness 路由](../src/integrations/extensions/routing.rs) 在派发前验证登记的方法输入，收到结果后验证输出，并校验保留方法的副作用声明。projects 的无效输出被拒绝；create_project、run 的派发后无效输出保留 Unknown。无效输入不占用节点派发，容量仍由监督任务持有至收尾。
 
-**待处理：** 保留回调 `Unknown` / `Cancelled` / `Rejected` 的分类，对派发后的协议、连接或回执错误采用明确的 Unknown 规则；规定有副作用回调出现 Unknown 后，顶层结果和取消收尾如何保留该事实，不能用模型的普通完成结果消除未知副作用。
+[remote_harness](../tests/remote_harness.rs) 固定覆盖 projects/create_project/run 的有效声明、缺必填输入、输出超限、声明不一致和调用次数；Protocol 和网络用例检查结构化分类。
 
-**关闭条件：** 固定回归覆盖派发前拒绝、派发前取消、派发后回执丢失、回调收尾失败，以及 Unknown 回调后节点返回顶层成功的情况；断言 wire 分类、上层结果与不重放行为。
+<a id="host-003"></a>
 
-### HOST-002 · P2 · Harness 调用未执行声明的输入输出 schema 校验
+### HOST-003 · 已完成 · Core 0.2 集成与旧工作流导入
 
-**位置：** [扩展路由](../src/integrations/extensions/routing.rs) 的 `call_harness_inner`。
+依赖与锁文件已更新到 `recuvora-core 0.2.0`。取消与调用监督位于 Host [runtime](../src/runtime/README.md)，领域存储位于 [persistence](../src/persistence/README.md)，恢复服务在 [recovery](../src/integrations/recovery/README.md) 调用 Core `RecoveryState`。Host 不保留旧 Core 服务或复制其领域状态机。
 
-该函数检查节点角色和方法白名单，却丢弃 `method_for` 返回的方法声明，随后直接调用 Client。与普通只读、repair 和声明式 view 路由不同，Harness 调用没有对参数和返回值执行 Protocol 的 `validate_value`。后续 DTO 与领域检查不能替代节点声明的必填字段和限额。
+Core 的增量历史摘要与 `latest_entry()`、`BeginReview` → `AssessAttempt` 和 `ExpandCapacity` 均已接入。实时审核不提供无持久审核尝试的 `assess` 入口；合法旧 `Assess` 仅通过专用完整历史导入验证，保留原归属与 revision，不伪造尝试。Core 的外部候选规范化修复由领域库负责，当前 Host 没有外部候选接入流程，不构成新的存储迁移任务。
 
-**复现与影响：** 节点声明输入必须含 `required_by_node`、输出数组 `maxItems: 0`。实际请求缺少该字段、节点返回一个合法项目；Protocol 分别报告 `missing required property` 与 `array too long`，Host 的 `list_projects` 却返回成功。登记成功与消息可反序列化尚不能保证 Harness 调用符合登记契约。
+**已接入的责任：**
 
-**待处理：** 派发前校验方法输入，收到结果后校验方法输出；有副作用方法派发后的无效结果必须保持 Unknown，不能解释成可安全重试的拒绝。补充 `projects`、`create_project`、`run` 的正反例与声明限额回归。
+1. Host 日志保存原始配置、完整事件/命令、提交请求及版本；持有独占文件锁并校验身份，拒绝版本冲突和提交 ID 内容冲突。可靠同步后才确认提案；重复提交不能再次获得回执，持久成功但回执丢失时重开核实历史，不安装推测状态。
+2. Host 提供时间、取消、在途调用监督和调度。重启提交 Core 要求的恢复事件，暂停待审批任务，中断执行保持 Unknown；不重新交付历史许可或重派原动作。审核回调绑定原尝试、revision 与截止时间。
+3. 同一规范目标使用稳定共享所有权，保留非终态、Unknown 和不确定提交的归属。故障、审批、知识条件在许可消费至真实网络发送之间受派发门保护；发送前复核所有权、当前证据、期限和隔离状态。
+4. 完整操作、审批关联、消费与执行授权、执行回执、业务验收和知识交付分别持久提交。Host 另保存派发阶段记录：只有可靠的未派发事实可作为独立 NotExecuted 证据，按 Unknown 两阶段核实收口；派发意图或证据不足继续阻断重放。
+5. Unknown 核实先向恢复域保存执行与验收证据，再核实审批，最后以相同证据和更新的审批事实完成恢复域；重启续接未完成提交，已过期的独立证据仍保留 Unknown，不刷新时间。普通完成文本、取消和目标健康均不代替执行证据。
+6. 恢复结果和待交付知识一起保存；按 created_revision 交付，知识可靠保存后才确认 DeliveryConfirmed。隔离、全局案例幂等和早期积压顺序由 Core 校验。交付重试不能重新执行脚本。
 
-**关闭条件：** 无效输入不产生节点调用，无效输出不作为成功项目或会话结果；有效声明继续工作，未知副作用及容量释放规则保持一致。
+**旧恢复存储导入：** Core `RecoveryImport` 与 `ApprovalImport` 校验完整旧历史及跨域关联，导入提案只接受空的新聚合，保存完整证明后不返回审核或执行效果。任务、操作、审批、原期限、诊断预算、故障轮次、知识案例幂等键和历史失败/Unknown 隔离均保留；新任务和审批 ID 避开迁入的旧身份。旧任务已 Unknown 而审批仍 Approved 的中断窗口通过专用迁移封锁进入 Unknown，不伪造消费许可。
 
-### 接口名称与客户端覆盖边界
+Host `import_legacy_recovery_bundle` 同时冻结原恢复、审批、知识和故障日志，校验所有关联后在原目录内生成完整新代次，最后原子替换恢复入口。原恢复目录、`recovery.lock` 对象与目标归属保持不变，原日志留存；旧版本拒绝解释激活后的入口。新服务沿原根目录打开，监控目录由结果返回供维护程序显式配置。接口前提及操作顺序见[持久化说明](../src/persistence/README.md#完整恢复存储)。
 
-节点线协议中的只读方法为 `recuvora.repair` v1 的 `reconcile`；`check_result` 是 Host HTTP / 服务管理入口名称。[扩展协议接入](extension-protocol.md) 已校正这两个名称的说明，不能要求节点把 wire 方法改成 `check_result`。
+**拒绝范围：** 损坏或不完整历史、缺域、操作/审批/故障/知识关联冲突、非法旧审核和缺少原命令历史的压缩知识检查点均阻止切换。导入不会补造执行证据、删除安全事实、改写活动配置或重放外部动作；这些拒绝属于迁移安全边界。
 
-Host 已提供 `/recovery` 管理接口，旧 `/repairs` 与 `/approvals` 不包含自动恢复记录。HTTP 接口存在不表示官方客户端已消费全部接口；客户端页面、动作名和权限的对齐情况由 UI 项目维护。客户端覆盖与上述两个实现缺口需分别核对。
+**已验证范围：** API、依赖与锁文件已迁移，全部 Host 目标通过重新编译、测试与严格静态检查。实际 Host 存储适配和隔离节点覆盖提交版本冲突、同 ID 内容冲突、持久成功但回执丢失、跨实例目标竞争、故障/审批/知识条件并发变化、迟到回调及跨域提交边界的进程中断。重启验证许可不重发、动作不重派、Unknown 不提前解除、知识重复交付幂等且顺序正确；旧日志正常导入、损坏与证据不足拒绝、切换失败保留原数据，以及激活前后进程退出均已覆盖。完成范围受上述导入安全边界限制，不代表真实节点或活动部署验收。
+
+### 接口与客户端边界
+
+节点只读核实方法为 recuvora.repair v1 的 reconcile；check_result 是 Host 管理入口。自动恢复记录位于 /recovery，旧 /repairs 与 /approvals 不包含这些记录。HTTP 接口存在不代表官方客户端已消费全部接口。
 
 ## 自动验证
 
-[Rust 检查脚本](../scripts/windows/check.rs)检查格式、所有 Host 目标编译、集中测试、文档测试和 Clippy。测试目标以 [Cargo.toml](../Cargo.toml)为准；Core 作为生产依赖编译，其测试套件独立维护。协议实现在本包，`tests/protocol.rs` 使用固定 JSON 样例检查兼容性和部分 schema 边界。
+检查入口为 [Rust 检查脚本](../scripts/windows/check.rs)，范围为 Host 格式、所有目标编译、集中测试、文档测试和严格 Clippy；不运行 Core 自身测试。测试目录说明每个目标职责，新增持久化和旧日志导入测试使用实际 Host 存储。
 
-回归覆盖 HTTP 认证/权限/revision、可信 actor、重复 ID、路径保护、网络取消/断连/TLS、监控时效与故障复核、恢复调度器去重与关闭等待、独立节点执行/验收证据、Unknown 核实和修复经验。测试节点为隔离网络替身，不调用活动节点或提供方账号。各测试职责与运行要求见 [测试说明](../tests/README.md)。
-
-目标所有权回归覆盖未绑定时拒绝提交、重复绑定拒绝、不同存储同目标互斥、未完成任务关闭后的持久所有者、原存储重开和安全排空后的转交。`repair_backend` 验证 Unknown 在关闭和更换状态目录后保持阻断；配置回归覆盖必填 `ownership_dir`、目录重叠、源码路径拒绝和加载不创建存储。未绑定 IncidentGuard 时拒绝登记新故障。
-
-可选 [ui_contract.mjs](../tests/ui_contract.mjs)验证外部 UI 客户端与实际 Host HTTP 的基础传输、静态文件、模拟及操作回执，不属于默认检查。它不启动浏览器或 Tauri，不覆盖客户端全部自动恢复页面和 Unknown 审批核验动作。
-
-### 最近记录的完整检查
-
-2026-10-01 使用 Rust 1.98.1 Windows gnullvm 工具链实际运行 `recuvora-host-check`，格式、所有目标编译、集中测试、5 个自定义专项测试程序、文档测试命令（0 用例）和 Clippy 全部通过；故障注入子进程入口按既有设计忽略。新增的 7 项开发工具回归覆盖参数拒绝、源码与本地依赖目录保护、Windows junction 拒绝、普通/规范路径转换、失败停止、已有数据保留及调用方环境不变。检查脚本统一位于 [scripts/windows](../scripts/windows/README.md)，通过 `dev-check` feature 启用，普通产品构建不包含开发工具。
-
-### 验证缺口
-
-HOST-001 与 HOST-002 已由额外隔离探针复现，仍未修复，也未纳入固定回归套件。固定 JSON 样例不穷尽全部边界；schema 字节/节点深度和声明集合限额的完整兼容覆盖仍待补充。公共常量在 protocol、声明验证与调用监督中分别维护，现有测试通过不能证明它们始终一致。
+Core 0.2 集成下，完整检查脚本已通过：格式检查、所有 Host 目标编译、全部集中测试、文档测试入口（当前 0 个用例）及 Clippy `-D warnings`。其中持久化 13 项、旧事件导入 7 项、完整旧恢复存储导入 7 项、网络 15 项、故障派发门 15 项、恢复调度 4 项通过；库测试包含激活边界 4 项、原根目录身份保护 3 项，以及跨域中断与关闭重试 13 项。覆盖真实子进程中断、核实续接、过期证据保留、关闭失败重试、原审批恢复及 Unknown 核实后的重复知识交付。进程模拟测试中的专用子进程入口标为 ignored，由父测试显式启动。回执丢失、协议替身与远端 Harness 专项也包含在完整检查中。文档相对链接与标题锚点检查、差异空白检查通过。
 
 ## 尚需部署验收
 
-真实脚本沙箱、执行者进程树监督、提供方认证、业务恢复、跨机部署、浏览器/Tauri 交互及长期稳定性必须由实际节点、UI 和部署分别验收。协议替身、文件读回、批准或 HTTP 接受均不能代替这些结论。
+真实脚本沙箱、执行者进程树监督、提供方认证、业务恢复、跨机部署、浏览器/Tauri 交互及长期稳定性由实际节点、UI 和部署分别验收。协议替身、文件读回、批准或 HTTP 接受不能代替这些结论。可选 ui_contract.mjs 不属于默认检查，本次没有据此宣称客户端完整支持。

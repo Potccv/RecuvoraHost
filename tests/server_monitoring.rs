@@ -1,9 +1,9 @@
 use super::{AUTH, call, config};
-use crate::server::{Console, router, timestamp};
-use recuvora_core::recovery::incidents::{
+use crate::persistence::incidents::{
     IncidentKind, IncidentSignal, IncidentStore, IncidentStoreConfig, MonitorCommit,
     SignalCondition,
 };
+use crate::server::{Console, router, timestamp};
 use serde_json::{Value, json};
 
 #[tokio::test]

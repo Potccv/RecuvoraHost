@@ -4,6 +4,7 @@
 | --- | --- |
 | [boot](boot/README.md)、[configuration](configuration/README.md) | 应用服务启动、配置加载、路径保护和关闭顺序 |
 | [runtime](runtime/README.md) | 模块生命周期、依赖、服务、事件与资源释放 |
+| [persistence](persistence/README.md) | Core 领域提案的可靠提交、配置绑定、日志恢复及离线旧事件导入 |
 | [monitoring](monitoring/README.md) | Host 定时轮询、规则、时效、覆盖、发现与故障联动 |
 | [harnesses](harnesses/README.md) | Harness 注册、选择、会话/项目/工具接口约定与校验 |
 | [protocol](protocol/README.md) | Host 的消息、schema、ID 与限额实现；外部节点按文档独立接入 |

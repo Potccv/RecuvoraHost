@@ -4,7 +4,7 @@
 
 远端脚本派发位于 [NodeRepairBackend](../integrations/recovery/node_backend.rs)，仅使用 Core AuthorizedScript。本目录只维护旧本机文本动作；Host 不启动解释器，节点负责目标作用域、执行监督和业务验收。接口见[修复流程](../../docs/recovery.md)。
 
-**当前已实现 [Windows 文本动作](files.rs)：读取显式白名单文件，以及匹配完整原文后的全文替换。** Host RepairSession 在 Core 保存审批许可的使用记录后调用 crate 内部写入入口；最多 64 个准确相对文件名，每个既有 UTF-8 文件最多 16 KiB。该本机入口未开放 shell、创建/删除、发布或桌面动作，其文件读回也不提供业务健康结论。
+**当前已实现 [Windows 文本动作](files.rs)：读取显式白名单文件，以及匹配完整原文后的全文替换。** Host RepairSession 在 Host 可靠保存 Core 审批许可消费提案后调用 crate 内部写入入口；最多 64 个准确相对文件名，每个既有 UTF-8 文件最多 16 KiB。该本机入口未开放 shell、创建/删除、发布或桌面动作，其文件读回也不提供业务健康结论。
 
 `ScopedFiles` 接收可信目标、白名单和保护路径；`TextEdit` 只描述准确路径、原文与替换。准备和执行均核对实际打开句柄的路径、链接数和内容，保留句柄至同步落盘和读回核验完成。`filepath` 与 `winapi-util` 提供安全 Windows 接口，项目仍禁止 unsafe。Windows 共享模式不能阻止任意同账号恶意程序新增硬链接，仍需运行身份和文件权限边界，不把本实现称为权限沙箱。
 

@@ -1,13 +1,14 @@
-//! Adapter from Host monitoring facts to the Core execution guard.
+//! Host gate binding authoritative monitor facts to recovery dispatch.
 use super::IncidentTrigger;
 use crate::integrations::recovery::{
-    IncidentGuard, IncidentReadiness, ProblemContext, RecoveryError,
+    IncidentDispatchLease, IncidentGuard, IncidentReadiness, ProblemContext, RecoveryError,
+    RecoveryFuture,
 };
-use crate::monitoring::MonitorHandle;
+use crate::monitoring::{MonitorHandle, MonitorIncidentLease};
 use recuvora_core::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
 use std::collections::BTreeSet;
 
-/// Connects Core workflow preflight to Host's atomic, fresh monitor view.
+/// Supplies Core workflow evidence under Host's atomic, fresh monitor gate.
 pub struct MonitorIncidentGuard {
     monitor: MonitorHandle,
     triggers: Vec<IncidentTrigger>,
@@ -37,6 +38,29 @@ impl MonitorIncidentGuard {
 }
 
 impl IncidentGuard for MonitorIncidentGuard {
+    fn acquire_dispatch<'a>(
+        &'a self,
+        problem: &'a ProblemContext,
+    ) -> RecoveryFuture<'a, Box<dyn IncidentDispatchLease>> {
+        Box::pin(async move {
+            let lease = self
+                .monitor
+                .acquire_repair_incident(
+                    &problem.incident_id,
+                    &problem.target_id,
+                    problem.incident_revision,
+                )
+                .await
+                .map_err(service)?;
+            let lease = GuardLease {
+                lease,
+                problem: problem.clone(),
+                triggers: self.triggers.clone(),
+            };
+            lease.current()?;
+            Ok(Box::new(lease) as Box<dyn IncidentDispatchLease>)
+        })
+    }
     fn with_current(
         &self,
         problem: &ProblemContext,
@@ -84,6 +108,43 @@ impl IncidentGuard for MonitorIncidentGuard {
                 },
             )
             .map_err(service)?
+    }
+}
+
+struct GuardLease {
+    lease: MonitorIncidentLease,
+    problem: ProblemContext,
+    triggers: Vec<IncidentTrigger>,
+}
+impl IncidentDispatchLease for GuardLease {
+    fn current(&self) -> Result<IncidentReadiness, RecoveryError> {
+        let record = self.lease.current().map_err(service)?;
+        if !self.triggers.iter().any(|trigger| {
+            trigger.monitor_id == record.monitor_id
+                && trigger.rule_id == record.rule_id
+                && trigger.fingerprint == self.problem.fingerprint
+                && trigger.conditions == self.problem.conditions
+                && trigger.keywords == self.problem.keywords
+        }) {
+            return Err(RecoveryError::Invalid(
+                "incident no longer matches its trusted trigger".into(),
+            ));
+        }
+        if record.status == IncidentStatus::Resolved && record.condition == SignalCondition::Clear {
+            Ok(IncidentReadiness::Resolved {
+                revision: record.revision,
+            })
+        } else if record.condition == SignalCondition::Active
+            && record.status != IncidentStatus::Resolved
+        {
+            Ok(IncidentReadiness::Active {
+                revision: record.revision,
+            })
+        } else {
+            Ok(IncidentReadiness::Unavailable {
+                reason: "incident has no current active evidence".into(),
+            })
+        }
     }
 }
 

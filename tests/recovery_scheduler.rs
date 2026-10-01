@@ -1,4 +1,3 @@
-use recuvora_core::operation::Cancellation;
 use recuvora_core::recovery::approval::{
     ApprovalDecision, ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity,
 };
@@ -6,6 +5,7 @@ use recuvora_core::recovery::knowledge::ScriptArtifact;
 use recuvora_host::integrations::recovery::*;
 use recuvora_host::integrations::recovery::{IncidentTrigger, RecoveryScheduler};
 use recuvora_host::monitoring::*;
+use recuvora_host::runtime::operation::Cancellation;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -53,7 +53,6 @@ fn config() -> RecoveryConfig {
         max_diagnoses: 2,
         minimum_script_occurrences: 1,
         max_tasks: 20,
-        max_journal_bytes: 4 * 1024 * 1024,
     }
 }
 

@@ -472,11 +472,11 @@ async fn console_configuration_allows_only_one_writer_until_released() {
 #[cfg(windows)]
 #[tokio::test]
 async fn production_core_rejects_control_target_and_http_never_fabricates_approval() {
-    use crate::repair::now;
-    use recuvora_core::recovery::approval::{
+    use crate::persistence::approval::{
         ApprovalAssessment, ApprovalDecision, ApprovalError, ApprovalPolicy, ApprovalState,
         ApprovalStore, ApprovalStoreConfig, AssessmentSource, ProposedOperation, ReviewerConfig,
     };
+    use crate::repair::now;
     let mut cfg = config("production-approval-boundary");
     cfg.permissions
         .extend(["approval.decide".into(), "approval.apply".into()]);

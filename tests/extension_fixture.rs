@@ -204,6 +204,23 @@ fn fixture(mut session: Session) -> TestResult {
         metadata.contracts[0].methods[0].input_schema =
             json!({"type":"object","$ref":"unimplemented"});
     }
+    if harness && mode.starts_with("schema-") {
+        for declaration in &mut metadata.contracts[0].methods {
+            if mode == "schema-input" {
+                declaration.input_schema = json!({"type":"object","properties":{"required_by_node":{"type":"string"}},"required":["required_by_node"]});
+            } else if declaration.name == "projects" {
+                declaration.output_schema =
+                    json!({"type":"array","maxItems":if mode == "schema-output" {0} else {1}});
+            } else {
+                let field = if declaration.name == "run" {
+                    "final_response"
+                } else {
+                    "name"
+                };
+                declaration.output_schema = json!({"type":"object","properties":{field:{"type":"string","maxLength":if mode == "schema-output" {0} else {64}}},"required":[field]});
+            }
+        }
+    }
     session.write(Message::Ready { metadata })?;
     let Some(Message::Call {
         id, method, params, ..
@@ -211,6 +228,10 @@ fn fixture(mut session: Session) -> TestResult {
     else {
         return Ok(());
     };
+    assert_ne!(
+        mode, "schema-input",
+        "invalid schema input must not dispatch a node call"
+    );
     if mode == "disconnect" {
         return Ok(());
     }
@@ -321,6 +342,16 @@ fn fixture(mut session: Session) -> TestResult {
                     session.write(callback.clone())?;
                     match session.read()? {
                         Some(Message::Result { result, .. }) => assert_eq!(result["success"], true),
+                        Some(Message::Error { outcome, .. }) if mode.starts_with("tool-error-") => {
+                            assert_eq!(
+                                outcome,
+                                match mode.as_str() {
+                                    "tool-error-cancelled" => Outcome::Cancelled,
+                                    "tool-error-rejected" => Outcome::Rejected,
+                                    _ => Outcome::Unknown,
+                                }
+                            );
+                        }
                         Some(Message::Cancel { .. }) | None => return Ok(()),
                         _ => return Err("tool callback failed".into()),
                     }

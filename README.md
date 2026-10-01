@@ -6,6 +6,8 @@ Host 负责配置、认证、服务装配、定时器与网络路由；Core 负�
 
 ## 当前范围
 
+Host 已接入 Core 0.2 的公开领域状态机，由 Host 承接持久提交、取消监督与恢复编排。提供保留原任务身份的受校验离线导入；适用范围见 [HOST-003](docs/implementation-status.md#host-003)。
+
 - 通过 ws/wss/http/https 接入实现扩展协议 v1 的节点和插件，使用远端 Harness 发送 AI 请求、管理项目和受控工具。
 - 只读轮询、规则/时效/覆盖判定、动态发现与持久故障查询；监控和故障确认均不触发修复。
 - 通过显式 `recovery_config` 启动诊断、独立审核、节点执行、业务验收及修复经验管理；管理入口为 `/recovery`。
@@ -14,9 +16,11 @@ Host 负责配置、认证、服务装配、定时器与网络路由；Core 负�
 
 本项目不提供节点服务端、供应商子进程启动、前端构建或插件安装包管理。网络节点必须已经运行并兼容本项目协议；任意 REST/模型地址及 stdio/SSH stdio 节点不能直接接入。
 
-当前存在回调 Unknown 分类丢失（HOST-001）和 Harness 输入输出 schema 校验缺失（HOST-002），详见 [实现状态](docs/implementation-status.md)。协议测试通过不证明真实目标恢复、跨机部署或客户端完整支持。
+回调 Unknown 保留及 Harness 输入输出 schema 校验已补齐，已知限制和本次验证见 [实现状态](docs/implementation-status.md)。协议测试不证明真实目标恢复、跨机部署或客户端完整支持。
 
 ## 从源码运行
+
+以下命令使用 Core 0.2 及新的 Host 存储格式。旧日志不会在启动时自动转换；已有部署升级前须核对 [导入限制](docs/implementation-status.md#host-003)，保留原数据和稳定目标所有权。
 
 需要 [工具链配置](rust-toolchain.toml)指定的 Rust 1.98.1，以及 [Cargo.toml](Cargo.toml)登记的 `recuvora-core` 路径依赖。先将 `CARGO_TARGET_DIR` 设置为源码外的专用绝对构建路径：
 
@@ -53,6 +57,6 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:7431/api/v1/bootstrap' -Headers @{ Auth
 | 配置服务与能力 | [配置](docs/configuration.md)、[模板](profiles/README.md) |
 | 实现独立节点或插件 | [扩展接入](docs/extension-protocol.md)、[协议 v1](docs/extension-protocol-v1.md)、[节点业务接口](docs/node-contracts-v1.md) |
 | 嵌入 Rust 服务或修改源码 | [Rust API](docs/host-rust-api.md)、[源码导航](src/README.md)、[开发指南](docs/development.md) |
-| 核对实现与验证限制 | [实现状态](docs/implementation-status.md)、[测试](tests/README.md) |
+| 核对 Core 0.2 迁移、已知问题与验证限制 | [实现状态](docs/implementation-status.md)、[迁移范围与验收](docs/implementation-status.md#host-003)、[测试](tests/README.md) |
 
 贡献者与编码 Agent 遵循 [AGENTS.md](AGENTS.md)及修改目录的局部规范。检查命令和环境准备见 [开发指南](docs/development.md)，检查脚本见 [scripts](scripts/README.md)。

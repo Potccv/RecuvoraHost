@@ -20,6 +20,7 @@ use crate::harnesses::{
 use crate::integrations::extensions::{ExtensionRegistry, ExtensionsConfig};
 use crate::integrations::recovery::{RecoveryError, RecoveryService};
 use crate::monitoring::{MonitorHandle, MonitorsConfig};
+use crate::persistence::approval::{ApprovalDecision, ApprovalError};
 use crate::repair::{RepairConfig, RepairSession, WorkflowError};
 use crate::simulation::{Engine, EngineConfig, EngineHandle, Simulation, TaskSpec};
 use axum::{
@@ -31,7 +32,6 @@ use axum::{
     routing::{get, post},
 };
 use journal::Journal;
-use recuvora_core::recovery::approval::{ApprovalDecision, ApprovalError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -163,6 +163,7 @@ impl From<RecoveryError> for ApiError {
     fn from(error: RecoveryError) -> Self {
         match &error {
             RecoveryError::Busy
+            | RecoveryError::Conflict
             | RecoveryError::Approval(
                 ApprovalError::Conflict
                 | ApprovalError::InvalidState(_)

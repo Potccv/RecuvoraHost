@@ -18,7 +18,7 @@ pub use crate::protocol::{
     Message, MethodDeclaration, Outcome, PROTOCOL_VERSION, call_id, valid_id, validate_schema,
     validate_value,
 };
-pub use client::{CallbackFuture, CallbackHandler, ExtensionCall, ExtensionClient};
+pub use client::{CallbackFuture, CallbackHandler, DispatchGuard, ExtensionCall, ExtensionClient};
 pub use config::{AllowedMethod, ExtensionDefinition, ExtensionsConfig};
 pub use endpoint::NetworkEndpoint;
 pub use node_settings::NodeSettings;

@@ -3,8 +3,8 @@ use super::scheduler::launch_monitor;
 use super::shared::Shared;
 use super::state::restore_state;
 use super::{MonitorError, MonitorHandle, MonitorsConfig, ObservationSource, discovery};
-use recuvora_core::operation::Cancellation;
-use recuvora_core::recovery::incidents::{IncidentStore, IncidentStoreConfig};
+use crate::persistence::incidents::{IncidentStore, IncidentStoreConfig};
+use crate::runtime::operation::Cancellation;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -68,7 +68,7 @@ impl MonitorEngine {
             views: Mutex::new(views),
             fresh_until: Mutex::new(BTreeMap::new()),
             discoveries: Mutex::new(discovery_views),
-            registration: Mutex::new(()),
+            registration: Arc::new(tokio::sync::Mutex::new(())),
             error: Mutex::new(None),
             cancellation: Cancellation::new(),
             accepting: AtomicBool::new(true),
@@ -89,13 +89,15 @@ impl MonitorEngine {
         self.handle.clone()
     }
     pub async fn shutdown(&mut self) -> Result<(), MonitorError> {
-        self.handle.begin_shutdown()?;
+        self.handle.begin_shutdown_async().await?;
         self.handle.wait_for_idle().await
     }
 }
 
 impl Drop for MonitorEngine {
     fn drop(&mut self) {
-        let _ = self.handle.begin_shutdown();
+        if self.handle.begin_shutdown().is_err() {
+            self.handle.request_stop();
+        }
     }
 }

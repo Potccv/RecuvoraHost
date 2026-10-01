@@ -9,8 +9,8 @@ use super::super::{
 };
 use super::config::{invalid, key_valid};
 use super::{DiscoveryBatch, DiscoverySnapshot, MonitorDiscovery};
-use recuvora_core::operation::Cancellation;
-use recuvora_core::recovery::incidents::{IncidentStore, MonitorCommit};
+use crate::persistence::incidents::{IncidentStore, MonitorCommit};
+use crate::runtime::operation::Cancellation;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -154,7 +154,7 @@ impl DiscoveryState {
         self.publish(shared)
     }
 
-    pub(super) fn accept(
+    pub(super) async fn accept(
         &mut self,
         batch: DiscoveryBatch,
         source: Arc<dyn ObservationSource>,
@@ -187,7 +187,7 @@ impl DiscoveryState {
                 "discovery lifetime target capacity exhausted".into(),
             ));
         }
-        let _registration = lock(&shared.registration)?;
+        let _registration = shared.registration.lock().await;
         if !shared.accepting.load(Ordering::Acquire) {
             return Err(MonitorError::Stopped);
         }

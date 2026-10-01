@@ -4,7 +4,7 @@ use crate::integrations::extensions::ExtensionRegistry;
 use crate::monitoring::{
     DiscoveryFuture, MonitorError, ObservationFuture, ObservationRequest, ObservationSource,
 };
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use std::sync::Arc;
 
 pub struct RegistryObservationSource(pub Arc<ExtensionRegistry>);

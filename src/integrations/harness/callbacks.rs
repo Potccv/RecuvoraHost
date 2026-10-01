@@ -1,5 +1,7 @@
 //! Tool correlation, replay rejection and bounded trusted callback dispatch.
-use crate::harnesses::{HarnessCancellation, HarnessTool, HarnessToolCall, HarnessToolHandler};
+use crate::harnesses::{
+    HarnessCancellation, HarnessError, HarnessTool, HarnessToolCall, HarnessToolHandler,
+};
 use crate::integrations::extensions::{CallbackFuture, CallbackHandler, ExtensionError};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -82,6 +84,7 @@ impl CallbackHandler for ToolRouter {
             if cancellation.is_cancelled() {
                 return Err(ExtensionError::Cancelled);
             }
+            let call_id = tool.call_id.clone();
             let result = self
                 .handler
                 .call(HarnessToolCall {
@@ -94,11 +97,24 @@ impl CallbackHandler for ToolRouter {
                     cancellation,
                 })
                 .await
-                .map_err(|e| ExtensionError::Rejected(e.to_string()))?;
+                .map_err(|error| match error {
+                    HarnessError::Interrupted { .. } => ExtensionError::Cancelled,
+                    HarnessError::ConversationOutcomeUnknown(_)
+                    | HarnessError::ProjectCreationOutcomeUnknown(_)
+                    | HarnessError::ProtocolViolation { .. }
+                    | HarnessError::Unavailable { .. }
+                    | HarnessError::DeadlineExceeded { .. }
+                    | HarnessError::OutputLimitExceeded { .. } => ExtensionError::Unknown {
+                        call_id: call_id.clone(),
+                        message: error.to_string(),
+                    },
+                    other => ExtensionError::Rejected(other.to_string()),
+                })?;
             if result.content.len() > 256 * 1024 {
-                return Err(ExtensionError::Rejected(
-                    "tool output exceeds 256 KiB".into(),
-                ));
+                return Err(ExtensionError::Unknown {
+                    call_id,
+                    message: "tool output exceeds 256 KiB".into(),
+                });
             }
             Ok(json!({"content":result.content,"success":result.success}))
         })

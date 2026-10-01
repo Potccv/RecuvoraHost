@@ -2,9 +2,9 @@
 use super::ExtensionRegistry;
 use super::callbacks::ReadRouter;
 use super::registry::{dispatch_error, method_for};
-use super::{CallbackHandler, ExtensionCall, ExtensionError, ExtensionKind};
+use super::{CallbackHandler, DispatchGuard, ExtensionCall, ExtensionError, ExtensionKind};
 use crate::protocol;
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +19,20 @@ impl ExtensionRegistry {
         params: Value,
         timeout: Duration,
         cancellation: Cancellation,
+    ) -> Result<Value, ExtensionError> {
+        self.call_repair_guarded(id, method, params, timeout, cancellation, None)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn call_repair_guarded(
+        &self,
+        id: &str,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        cancellation: Cancellation,
+        dispatch_guard: Option<Arc<dyn DispatchGuard>>,
     ) -> Result<Value, ExtensionError> {
         let registry = self.clone();
         let id = id.to_owned();
@@ -35,6 +49,11 @@ impl ExtensionRegistry {
                     return Err(ExtensionError::Rejected("invalid repair node route".into()));
                 }
                 let declaration = method_for(entry, "recuvora.repair", 1, &method)?;
+                if method == "execute_script" && dispatch_guard.is_none() {
+                    return Err(ExtensionError::Rejected(
+                        "execution dispatch guard required".into(),
+                    ));
+                }
                 if declaration.read_only != (method != "execute_script") {
                     return Err(ExtensionError::Rejected(
                         "repair method effect mismatch".into(),
@@ -52,7 +71,7 @@ impl ExtensionRegistry {
                 })?;
                 let result = entry
                     .client
-                    .call_with_settings(
+                    .call_with_dispatch_guard(
                         ExtensionCall {
                             contract: "recuvora.repair".into(),
                             version: 1,
@@ -65,6 +84,7 @@ impl ExtensionRegistry {
                         None,
                         Some(capacity),
                         &registry.settings.protocol,
+                        dispatch_guard,
                     )
                     .await?;
                 protocol::validate_value(&declaration.output_schema, &result).map_err(|error| {
@@ -218,7 +238,15 @@ impl ExtensionRegistry {
                 "Harness provider must be a node".into(),
             ));
         }
-        let _ = method_for(entry, "recuvora.harness", 1, method)?;
+        let declaration = method_for(entry, "recuvora.harness", 1, method)?;
+        if !matches!(method, "projects" | "create_project" | "run")
+            || declaration.read_only != (method == "projects")
+        {
+            return Err(ExtensionError::Rejected(
+                "Harness method effect mismatch".into(),
+            ));
+        }
+        protocol::validate_value(&declaration.input_schema, &params)?;
         let permit = if approval {
             entry.approval.clone()
         } else {
@@ -226,7 +254,7 @@ impl ExtensionRegistry {
         }
         .try_acquire_owned()
         .map_err(|_| ExtensionError::Rejected("Harness role capacity exhausted".into()))?;
-        entry
+        let result = entry
             .client
             .call_with_settings(
                 ExtensionCall {
@@ -242,6 +270,17 @@ impl ExtensionRegistry {
                 Some(permit),
                 &self.settings.protocol,
             )
-            .await
+            .await?;
+        protocol::validate_value(&declaration.output_schema, &result).map_err(|error| {
+            if declaration.read_only {
+                error
+            } else {
+                ExtensionError::Unknown {
+                    call_id: format!("{id}:{method}"),
+                    message: error.to_string(),
+                }
+            }
+        })?;
+        Ok(result)
     }
 }

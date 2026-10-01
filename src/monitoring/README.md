@@ -1,6 +1,6 @@
 # 通用观测与监控
 
-本模块已实现配置驱动的只读轮询、确定性规则、样本新鲜度和采集完整性检查。具体日志、进程、指标和健康探针由独立节点项目实现；应用通过 Host `ObservationSource` 注入。故障记录和人工确认属于 Core IncidentStore，此模块不自动诊断或执行修复；显式恢复流程初始化见[恢复流程](../../docs/recovery.md)。
+本模块已实现配置驱动的只读轮询、确定性规则、样本新鲜度和采集完整性检查。具体日志、进程、指标和健康探针由独立节点项目实现；应用通过 Host `ObservationSource` 注入。故障变化由 Core IncidentLedger 校验，Host persistence::incidents::IncidentStore 持久提交，此模块不自动诊断或执行修复；显式恢复流程初始化见[恢复流程](../../docs/recovery.md)。
 
 RecuvoraHost 的 `RegistryObservationSource` 可通过 ws/wss/http/https 承载节点来源；Core 不包含 ObservationSource 或网络接入。网络接入不会改变每个监控同时只处理一次轮询的限制、覆盖、游标与故障原子提交语义。
 
@@ -8,7 +8,9 @@ RecuvoraHost 的 `RegistryObservationSource` 可通过 ws/wss/http/https 承载�
 
 `MonitorHandle::repair_incident` 为可信流程提供执行前的故障事实复查，在同一登记同步锁内核对 incident、target、最低 revision、规则绑定、当前运行状态、覆盖和新鲜度。单调时钟期限独立于快照刷新周期，过期时即使缓存仍显示 Fresh 也拒绝执行前提；来源停止、Unknown、覆盖不足与重启后尚无新证据同样拒绝。已解除记录返回给流程取消旧任务，确认后的较新 revision 可继续有效。该查询不产生执行许可，流程仍负责审批和动作授权。
 
-`with_repair_incident` 允许可信调用方在相同登记同步锁内完成有执行时间限制的同步授权提交，避免最终读取与许可使用之间插入故障解除或正常关闭；回调前释放事实存储和视图锁，只保留登记同步锁。回调不能重入监控、等待外部服务或执行目标动作。普通快照查询继续使用 `repair_incident`。
+`with_repair_incident` 允许可信调用方在登记门内完成有执行时间限制的同步授权提交，回调前释放事实存储和视图锁。同步授权、`repair_incident`、确认和开始关闭在门忙时立即拒绝，不阻塞异步运行时线程；回调不能重入监控、等待外部服务或执行目标动作。
+
+实际执行通过 `acquire_repair_incident` 异步取得 `MonitorIncidentLease`，从审批消费和流程授权提交持有到网络发送完成。观察、发现、确认及正常关闭不能跨过该区间；lease 的 `current` 在握手之后重新检查事实、单调时钟期限和运行状态，持门不会冻结证据年龄。发送后即释放门，不等待节点执行完成。观察/发现写入、worker 排空和异步关闭等待同一个异步门，普通诊断查询仍可读取快照。
 
 ## 源码职责
 
@@ -28,7 +30,7 @@ RecuvoraHost 的 `RegistryObservationSource` 可通过 ws/wss/http/https 承载�
 | [discovery/](discovery/README.md) | 发现接口约定、可信模板校验、持久目标登记、在场代次和发现轮询。 |
 | [support.rs](support.rs) | 共享数据上限、限制长度的诊断文本与时钟单位转换。 |
 
-调度只组织已有操作，不裁决故障解除；状态转换仍与检查点一并提交到Core 故障存储。动态登记和观察提交继续通过同一登记同步锁串行校验，持久化先于发布和派发。
+调度只组织已有操作，不裁决故障解除；状态转换仍与检查点一并提交到 Host 故障存储。动态登记和观察提交继续通过同一登记同步锁串行校验，持久化先于发布和派发。
 
 当前没有原始日志上传或处理器模块。Node/插件按只读接口约定返回结构化观察，Host 校验并使用；HTTP log_sources 仅查询配置绑定的每页最多 32 条的记录，不推进监控游标，也不提供上传入口。
 

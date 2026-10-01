@@ -1,6 +1,5 @@
 //! Loopback network protocol fixtures for the real host-side repair backend.
 mod network_peer;
-use recuvora_core::operation::Cancellation;
 use recuvora_core::recovery::approval::{ApprovalPolicy, ProposedOperation, ReviewerConfig};
 use recuvora_core::recovery::knowledge::KnowledgeQuery;
 use recuvora_host::harnesses::*;
@@ -11,6 +10,7 @@ use recuvora_host::integrations::extensions::{
 use recuvora_host::integrations::harness::RemoteHarnessFactory;
 use recuvora_host::integrations::recovery::NodeRepairBackend;
 use recuvora_host::integrations::recovery::*;
+use recuvora_host::runtime::operation::Cancellation;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -141,7 +141,6 @@ fn config() -> RecoveryConfig {
         max_diagnoses: 2,
         minimum_script_occurrences: 2,
         max_tasks: 10,
-        max_journal_bytes: 4 * 1024 * 1024,
     }
 }
 fn problem() -> ProblemContext {
@@ -165,6 +164,7 @@ fn task() -> RecoveryTask {
         episode_count: 1,
         stage: RecoveryStage::Diagnosing,
         diagnosis_attempts: 1,
+        diagnosis_call: None,
         plan: None,
         knowledge_id: None,
         reused_script: false,
@@ -246,7 +246,22 @@ async fn backend(
 }
 
 struct FixtureIncidentGuard;
+struct FixtureDispatchLease(u64);
+impl IncidentDispatchLease for FixtureDispatchLease {
+    fn current(&self) -> Result<IncidentReadiness, RecoveryError> {
+        Ok(IncidentReadiness::Active { revision: self.0 })
+    }
+}
 impl IncidentGuard for FixtureIncidentGuard {
+    fn acquire_dispatch<'a>(
+        &'a self,
+        problem: &'a ProblemContext,
+    ) -> RecoveryFuture<'a, Box<dyn IncidentDispatchLease>> {
+        Box::pin(async move {
+            Ok(Box::new(FixtureDispatchLease(problem.incident_revision))
+                as Box<dyn IncidentDispatchLease>)
+        })
+    }
     fn with_current(
         &self,
         problem: &ProblemContext,
@@ -384,7 +399,7 @@ async fn run() -> TestResult {
                     "healthy business evidence cannot prove execution"
                 );
             } else {
-                assert_eq!(recovered.stage, RecoveryStage::Publishing);
+                assert_eq!(recovered.stage, RecoveryStage::Completed);
                 assert!(matches!(
                     adapter
                         .check_task_result(

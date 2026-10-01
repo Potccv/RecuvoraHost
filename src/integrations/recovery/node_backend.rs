@@ -10,7 +10,7 @@ use crate::integrations::recovery::{
     RepairBackend, RepairPlan, ReviewInput, ReviewOutput, ScriptOutcome, ScriptReceipt,
     SystemRecoveryClock, TargetBinding, TargetObservation, VerificationInput,
 };
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use recuvora_core::recovery::approval;
 use recuvora_core::recovery::knowledge::{MAX_SCRIPT_BYTES, ScriptArtifact};
 use serde::Deserialize;
@@ -506,12 +506,13 @@ async fn execute_script(
         ));
     }
     let value = registry
-        .call_repair(
+        .call_repair_guarded(
             executor,
             "execute_script",
             json!({"request_id": script.request_id(), "operation": operation}),
             Duration::from_secs(script.timeout_secs()),
             cancellation,
+            script.dispatch_guard(),
         )
         .await?;
     let receipt: ScriptReceipt =

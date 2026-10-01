@@ -1,10 +1,10 @@
 //! Loopback-only network peer for the public extension protocol.
 use futures_util::{SinkExt, StreamExt};
-use recuvora_core::operation::Cancellation;
 use recuvora_host::integrations::extensions::{
     ContractDeclaration, ExtensionClient, ExtensionKind, ExtensionMetadata, MAX_FRAME_BYTES,
     Message, MethodDeclaration, NetworkEndpoint, Outcome, PROTOCOL_VERSION,
 };
+use recuvora_host::runtime::operation::Cancellation;
 use serde_json::json;
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
@@ -26,6 +26,7 @@ pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>
 pub enum Behavior {
     Echo,
     Callback,
+    CallbackCleanupFailure,
     WaitForCancel,
     Disconnect,
     WrongCorrelation,
@@ -70,6 +71,7 @@ pub struct State {
     pub handshakes: AtomicUsize,
     pub redirect_hits: AtomicUsize,
     pub metadata_changed: AtomicBool,
+    pub callback_outcomes: Mutex<Vec<Outcome>>,
     dispatched: Notify,
     sessions: Mutex<BTreeMap<String, Arc<Session>>>,
 }
@@ -84,6 +86,7 @@ impl State {
             handshakes: AtomicUsize::new(0),
             redirect_hits: AtomicUsize::new(0),
             metadata_changed: AtomicBool::new(false),
+            callback_outcomes: Mutex::new(Vec::new()),
             dispatched: Notify::new(),
             sessions: Mutex::new(BTreeMap::new()),
         }
@@ -162,12 +165,14 @@ impl State {
                 self.dispatched.notify_one();
                 *session.parent.lock().unwrap() = Some(id.clone());
                 match self.behavior {
-                    Behavior::Callback => session.push(Outbound::Message(Message::Callback {
-                        id: "callback-1".into(),
-                        parent_id: id,
-                        method: "tool".into(),
-                        params: json!({"workload":"target-a"}),
-                    })),
+                    Behavior::Callback | Behavior::CallbackCleanupFailure => {
+                        session.push(Outbound::Message(Message::Callback {
+                            id: "callback-1".into(),
+                            parent_id: id,
+                            method: "tool".into(),
+                            params: json!({"workload":"target-a"}),
+                        }))
+                    }
                     Behavior::WaitForCancel => {}
                     Behavior::Disconnect | Behavior::Unavailable => {
                         session.push(Outbound::Disconnect);
@@ -203,7 +208,14 @@ impl State {
                     outcome: Outcome::Cancelled,
                 }));
             }
-            Message::Error { .. } => {}
+            Message::Error { id, outcome, .. } => {
+                assert_eq!(id, "callback-1");
+                self.callback_outcomes.lock().unwrap().push(outcome);
+                session.push(Outbound::Message(Message::Result {
+                    id: session.parent.lock().unwrap().clone().unwrap(),
+                    result: json!({"completed":true}),
+                }));
+            }
             other => panic!("unexpected fixture message: {other:?}"),
         }
     }
@@ -530,7 +542,19 @@ async fn serve_http(mut stream: Stream, state: Arc<State>) -> io::Result<()> {
         },
         "DELETE" => {
             state.sessions.lock().unwrap().remove(&id);
-            response(&mut stream, "204 No Content", "", &[]).await
+            let failed = matches!(state.behavior, Behavior::CallbackCleanupFailure)
+                && session.parent.lock().unwrap().is_some();
+            response(
+                &mut stream,
+                if failed {
+                    "503 Service Unavailable"
+                } else {
+                    "204 No Content"
+                },
+                "",
+                &[],
+            )
+            .await
         }
         _ => response(&mut stream, "405 Method Not Allowed", "", &[]).await,
     }

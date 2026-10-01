@@ -4,7 +4,7 @@ use crate::integrations::recovery::{
     ProblemContext, RecoveryError, RecoveryService, RecoveryStage,
 };
 use crate::monitoring::MonitorHandle;
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use recuvora_core::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -234,6 +234,9 @@ async fn run(
     loop {
         if cancellation.is_cancelled() {
             break;
+        }
+        if let Err(error) = recovery.deliver_pending() {
+            remember(last_error, error);
         }
         let tasks = match recovery.tasks() {
             Ok(tasks) => tasks,

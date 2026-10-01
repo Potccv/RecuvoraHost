@@ -12,7 +12,7 @@ use super::{
     HarnessProject, HarnessProjectCreateRequest, HarnessProjectListRequest, HarnessProvider,
     HarnessRegistryConfig, HarnessRunRequest, HarnessRunResult, ProjectCreationUncertainty,
 };
-use recuvora_core::operation::{CallScope, DispatchError};
+use crate::runtime::operation::{CallScope, DispatchError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

@@ -71,6 +71,8 @@ fn tool_request(calls: Arc<AtomicUsize>) -> HarnessRunRequest {
 }
 async fn run(fixtures: &FixtureServers) -> TestResult {
     capacity_and_dropped_caller_wait(fixtures).await?;
+    declared_schema_boundaries(fixtures).await?;
+    tool_error_classification(fixtures).await?;
     let normal = registry(fixtures, "good").await?;
     let projects = normal
         .list_projects(
@@ -185,6 +187,140 @@ async fn run(fixtures: &FixtureServers) -> TestResult {
     println!(
         "remote_harness: workspace ownership, text, projects, role isolation, host tools, duplicate prevention and Unknown passed"
     );
+    Ok(())
+}
+
+async fn declared_schema_boundaries(fixtures: &FixtureServers) -> TestResult {
+    for mode in ["schema-input", "schema-output", "schema-valid"] {
+        let registry = registry(fixtures, mode).await?;
+        // More calls than capacity also prove validation failures release slots.
+        for _ in 0..5 {
+            let projects = registry
+                .list_projects(
+                    None,
+                    HarnessProjectListRequest::remote("fixture-node", "work"),
+                )
+                .await;
+            let project = registry
+                .create_project(
+                    None,
+                    HarnessProjectCreateRequest::remote(
+                        "fixture-node",
+                        "work",
+                        "New",
+                        "schema-once",
+                    ),
+                )
+                .await;
+            let run = registry
+                .run(
+                    None,
+                    HarnessRunRequest::remote("fixture-node", "work", "schema check"),
+                )
+                .await;
+            match mode {
+                "schema-input" => {
+                    assert!(
+                        matches!(projects, Err(HarnessError::TurnFailed { ref message, .. }) if message.contains("missing required property"))
+                    );
+                    assert!(
+                        matches!(project, Err(HarnessError::TurnFailed { ref message, .. }) if message.contains("missing required property"))
+                    );
+                    assert!(
+                        matches!(run, Err(HarnessError::TurnFailed { ref message, .. }) if message.contains("missing required property"))
+                    );
+                }
+                "schema-output" => {
+                    assert!(
+                        matches!(projects, Err(HarnessError::TurnFailed { ref message, .. }) if message.contains("array too long"))
+                    );
+                    assert!(matches!(
+                        project,
+                        Err(HarnessError::ProjectCreationOutcomeUnknown(_))
+                    ));
+                    assert!(matches!(
+                        run,
+                        Err(HarnessError::ConversationOutcomeUnknown(_))
+                    ));
+                }
+                _ => {
+                    assert_eq!(projects?.len(), 1);
+                    assert_eq!(project?.name, "New");
+                    assert_eq!(run?.final_response, "REMOTE_FIXTURE");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+struct ErrorHandler {
+    mode: &'static str,
+    calls: Arc<AtomicUsize>,
+}
+impl HarnessToolHandler for ErrorHandler {
+    fn call<'a>(&'a self, call: HarnessToolCall) -> HarnessToolFuture<'a> {
+        Box::pin(async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.mode {
+                "tool-error-cancelled" => Err(HarnessError::Interrupted {
+                    harness: call.harness_id,
+                }),
+                "tool-error-rejected" => Err(HarnessError::ToolRequestRejected {
+                    harness: call.harness_id,
+                    method: call.tool,
+                }),
+                "tool-error-oversized" => Ok(HarnessToolResult {
+                    content: "x".repeat(256 * 1024 + 1),
+                    success: true,
+                }),
+                _ => Err(HarnessError::ConversationOutcomeUnknown(Box::new(
+                    ConversationUncertainty {
+                        harness: call.harness_id,
+                        thread_id: Some(call.thread_id),
+                        project_directory: "node://fixture-node/work".into(),
+                        visibility: ConversationVisibility::Hidden,
+                        native_project_id: None,
+                        message: "external action dispatched; receipt lost".into(),
+                    },
+                ))),
+            }
+        })
+    }
+}
+async fn tool_error_classification(fixtures: &FixtureServers) -> TestResult {
+    for mode in [
+        "tool-error-unknown",
+        "tool-error-cancelled",
+        "tool-error-rejected",
+        "tool-error-oversized",
+    ] {
+        let registry = registry(fixtures, mode).await?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let request = HarnessRunRequest::remote("fixture-node", "work", "tool classification")
+            .with_visibility(ConversationVisibility::Hidden)
+            .with_tools(
+                vec![HarnessTool {
+                    name: "action".into(),
+                    description: "trusted action".into(),
+                    input_schema: json!({"type":"object"}),
+                }],
+                Arc::new(ErrorHandler {
+                    mode,
+                    calls: calls.clone(),
+                }),
+            );
+        let result = registry.run(None, request).await;
+        if matches!(mode, "tool-error-unknown" | "tool-error-oversized") {
+            assert!(
+                matches!(result, Err(HarnessError::ConversationOutcomeUnknown(_))),
+                "{mode}: {result:?}"
+            );
+        } else {
+            assert_eq!(result?.final_response, "REMOTE_FIXTURE");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
     Ok(())
 }
 

@@ -207,7 +207,8 @@ impl HostRuntime {
         self.recovery = None;
         if let Some(handle) = &self.monitor_handle {
             handle
-                .begin_shutdown()
+                .begin_shutdown_async()
+                .await
                 .map_err(|error| HostError::Lifecycle(error.to_string()))?;
         }
         if let Some(registry) = &self.harnesses {

@@ -11,6 +11,9 @@
     {"type":"error","id":"call-001","code":"denied","message":"outside scope","outcome":"rejected"},
     {"type":"error","id":"call-001","code":"lost_receipt","message":"execution may have started","outcome":"unknown"},
     {"type":"error","id":"call-001","code":"cancelled","message":"cancelled before dispatch","outcome":"cancelled"},
+    {"type":"error","id":"callback-001","code":"tool_rejected","message":"tool rejected before dispatch","outcome":"rejected"},
+    {"type":"error","id":"callback-001","code":"tool_cancelled","message":"tool cancelled before dispatch","outcome":"cancelled"},
+    {"type":"error","id":"callback-001","code":"tool_unknown","message":"external action receipt lost","outcome":"unknown"},
     {"type":"cancel","id":"call-001"}
   ],
   "invalid": [

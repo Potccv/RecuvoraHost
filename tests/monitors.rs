@@ -1,6 +1,6 @@
-use recuvora_core::operation::Cancellation;
 use recuvora_core::recovery::incidents::{IncidentKind, IncidentStatus};
 use recuvora_host::monitoring::*;
+use recuvora_host::runtime::operation::Cancellation;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

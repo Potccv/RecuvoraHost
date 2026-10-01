@@ -1,8 +1,8 @@
 //! Host storage and scheduling settings around the unchanged Core contract.
 use crate::integrations::recovery::IncidentTrigger;
 use crate::integrations::recovery::{CanonicalTarget, RecoveryConfig, RecoveryError};
-use recuvora_core::recovery::approval::ApprovalStoreConfig;
-use recuvora_core::recovery::knowledge::KnowledgeStoreConfig;
+use crate::persistence::approval::ApprovalStoreConfig;
+use crate::persistence::knowledge::KnowledgeStoreConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

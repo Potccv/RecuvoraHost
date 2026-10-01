@@ -1,10 +1,10 @@
 //! Shared runtime ownership, registration gate and active worker tracking.
 use super::{DiscoverySnapshot, MonitorDefinition, MonitorError, MonitorSnapshot, TargetHealth};
-use recuvora_core::operation::Cancellation;
-use recuvora_core::recovery::incidents::IncidentStore;
+use crate::persistence::incidents::IncidentStore;
+use crate::runtime::operation::Cancellation;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::watch;
 
 pub(super) struct Shared {
@@ -13,7 +13,7 @@ pub(super) struct Shared {
     pub(super) views: Mutex<BTreeMap<String, MonitorSnapshot>>,
     pub(super) fresh_until: Mutex<BTreeMap<String, tokio::time::Instant>>,
     pub(super) discoveries: Mutex<BTreeMap<String, DiscoverySnapshot>>,
-    pub(super) registration: Mutex<()>,
+    pub(super) registration: Arc<tokio::sync::Mutex<()>>,
     pub(super) error: Mutex<Option<String>>,
     pub(super) cancellation: Cancellation,
     pub(super) accepting: AtomicBool,
@@ -48,9 +48,9 @@ impl Shared {
     }
 }
 
-pub(super) fn worker_finished(shared: &Shared) {
+pub(super) async fn worker_finished(shared: &Shared) {
+    let _registration = shared.registration.lock().await;
     let result = (|| -> Result<(), MonitorError> {
-        let _registration = lock(&shared.registration)?;
         shared
             .workers
             .send_modify(|count| *count = count.saturating_sub(1));

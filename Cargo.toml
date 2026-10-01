@@ -1,6 +1,6 @@
 [package]
 name = "recuvora-host"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
@@ -13,7 +13,7 @@ description = "CLI and authenticated HTTP application host for Recuvora Core"
 dev-check = []
 
 [dependencies]
-recuvora-core = { path = "../RecuvoraCore", version = "0.1.0" }
+recuvora-core = { path = "../RecuvoraCore", version = "0.2.0" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal", "net"] }
 axum = "=0.8.9"
 serde = { version = "1.0", features = ["derive"] }
@@ -64,6 +64,18 @@ path = "tests/cli.rs"
 [[test]]
 name = "protocol"
 path = "tests/protocol.rs"
+
+[[test]]
+name = "persistence"
+path = "tests/persistence.rs"
+
+[[test]]
+name = "legacy_import"
+path = "tests/legacy_import.rs"
+
+[[test]]
+name = "legacy_bundle"
+path = "tests/legacy_bundle.rs"
 
 [[test]]
 name = "server_logs"

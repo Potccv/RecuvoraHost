@@ -43,7 +43,9 @@ Ready 的能力标识按功能声明：文本调用需要 `text`，Client 会话
 
 `arguments` 必须是对象且不超过 64 KiB。只允许本次请求声明的工具；同次调用固定 thread/turn，最多 64 个不同工具 call_id，不得重复派发。Host 用 callback 的 envelope ID 回复 result，其载荷为 `{"content":"bounded text","success":true}`，content 最多 256 KiB；错误使用协议 Error。节点不能把工具许可解释为原生命令、文件写入或模型供应商其他工具权限。
 
-当前回调结果分类及 Harness 声明 schema 校验存在已登记缺口（HOST-001/002），见[实现状态](implementation-status.md)。上面的契约要求不表示两处消费路径已经修复。
+Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输入和输出 schema；输入不符在派发前拒绝，结果不符不得作为成功项目或会话返回。`create_project` 和 `run` 已派发后的无效输出保持 Unknown；`projects` 的只读无效输出作为契约校验错误返回。节点可声明比上述通用上限更严格的必填字段、数组项数或字符串长度，Host 同时执行这些限额。
+
+工具处理器的拒绝、派发前取消和 Unknown 按[协议结果分类](extension-protocol-v1.md#标识版本与结果含义)返回；有副作用回调的 Unknown 不能被本次会话的普通顶层结果消除，回调输出超限也保持 Unknown。
 
 ## 恢复执行器：`recuvora.repair`，version 1
 

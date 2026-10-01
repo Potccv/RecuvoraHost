@@ -345,7 +345,7 @@ async fn authenticated_revision_prevents_stale_decision_and_write() {
         )
         .unwrap();
     assert!(
-        matches!(approved.assessment.as_ref().unwrap().reviewer, recuvora_core::recovery::approval::AssessmentSource::Human{ref actor} if actor=="remote-operator")
+        matches!(approved.assessment.as_ref().unwrap().reviewer, crate::persistence::approval::AssessmentSource::Human{ref actor} if actor=="remote-operator")
     );
     assert!(
         session
@@ -485,60 +485,16 @@ async fn receipt_journal_failure_returns_structured_unknown_after_actual_write()
     session
         .decide(&id, ApprovalDecision::Approve, "reviewed".into())
         .unwrap();
-    let journal = dir.path.join("state/approvals.jsonl");
-    let before = std::fs::metadata(&journal).unwrap().len();
-    let permit = session
-        .store()
-        .unwrap()
-        .consume(
-            &id,
-            &record.request.operation,
-            &session.config.policy,
-            now().unwrap(),
-        )
-        .unwrap();
-    drop(permit);
-    let after_intent = std::fs::metadata(&journal).unwrap().len();
-    let config = session.config.clone();
-    drop(session);
-    // Fixture reset: no effect was dispatched above. Restore the pre-intent
-    // snapshot, then cap the journal to exactly one more execution intent.
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(&journal)
-        .unwrap()
-        .set_len(before)
-        .unwrap();
-    let reopened = RepairSession::open(config, None, &[]).unwrap();
-    let RepairSession {
-        config,
-        files,
-        store,
-        registry,
-    } = Arc::try_unwrap(reopened).ok().unwrap();
-    drop(store);
-    let store = ApprovalStore::open(
-        &config.data_dir,
-        ApprovalStoreConfig {
-            max_requests: 100,
-            max_journal_bytes: after_intent,
-        },
-        now().unwrap(),
-    )
-    .unwrap();
-    let bounded = RepairSession {
-        config,
-        files,
-        store: Mutex::new(store),
-        registry,
-    };
+    // Allow the execution intent to sync, then fail completion persistence.
+    // Trusted configuration and all prior history remain unchanged.
+    session.store().unwrap().fail_after_commits(1, false);
     assert!(matches!(
-        bounded.apply(&id, &HarnessCancellation::new()),
+        session.apply(&id, &HarnessCancellation::new()),
         Err(WorkflowError::OutcomeUnknown { .. })
     ));
     assert_eq!(
         std::fs::read_to_string(dir.path.join("target/a.txt")).unwrap(),
         "after"
     );
-    assert_eq!(bounded.record(&id).unwrap().state, ApprovalState::Executing);
+    assert_eq!(session.record(&id).unwrap().state, ApprovalState::Executing);
 }

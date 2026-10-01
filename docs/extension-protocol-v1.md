@@ -77,6 +77,8 @@
 
 线协议没有独立的 `failed` outcome。业务上已确认的执行失败可由相应契约的 result 表示；不得将不确定结果统一解释为可重试失败。Host 协议模块的 `ExtensionError` 是 Rust 错误类型，不是独立 wire 消息；schema/value 校验失败使用其 `Rejected`，网络错误到 Unknown 的映射由 Host 完成。
 
+可信回调的派发前拒绝、派发前取消分别回复 `outcome: rejected`、`outcome: cancelled`；回执丢失或其他不确定副作用回复 `outcome: unknown`。回调已派发后的协议、连接、超限输出和收尾错误不得降为拒绝。Host 保存回调 Unknown 及原调用身份，即使节点随后返回顶层成功、取消确认或普通完成文本，也向调用方返回 Unknown；取消排空期间可信回调的最终 Unknown 同样保留。该事实须由独立执行证据核实，不触发自动重放。
+
 ## 严格 schema 子集
 
 schema 必须是对象，含一个字符串 `type`，支持 `object`、`array`、`string`、`integer`、`number`、`boolean`、`null`。不支持联合类型，也不宣称完整 JSON Schema 兼容。
@@ -146,7 +148,7 @@ Host 在可信配置下登记插件命名空间契约，并使节点仅实现已
 
 Harness 项目、执行/审批会话与工具回调通过现有 Call/Result/Callback 表达；独立审批会话及正式工具许可属于 Host/Core 业务约束。Host 协议模块不定义这些 params/result 的业务 Rust 类型或提供方实现。
 
-修复节点可提供 inspect、verify、execute_script 和可选只读 reconcile。Host 的显式结果核实从绑定节点取得原操作执行事实，再独立 verify，交由 Core 检查并保存；这是明确触发的只读核实，不是自动对账、断连重试或重放脚本。execute_script 仍只能在 Core 消费一次许可后由可信内部路由派发。具体证据格式与恢复流程由 Host/Core 维护，不加入共同 `Outcome`。
+修复节点可提供 inspect、verify、execute_script 和可选只读 reconcile。Host 的显式结果核实从绑定节点取得原操作执行事实，再独立 verify，交由 Core 检查、Host 保存；这是明确触发的只读核实，不是自动对账、断连重试或重放脚本。execute_script 仍只能在 Core 消费一次许可后由可信内部路由派发。具体证据格式与恢复流程由 Host/Core 维护，不加入共同 `Outcome`。
 
 Host 还可消费 `recuvora.monitoring_view.v1` 能力下的只读 `describe_monitoring_view`，校验声明式数据后通过其 HTTP UI catalog/view 展示；描述调用有独立容量且不授予普通节点读取回调权限。配置绑定的目标记录查询同样使用已有只读契约调用。UI 描述、HTTP 路由、日志来源配置和业务字段不属于Host 协议模块，Host 协议模块不运行插件 HTML 或脚本。
 
@@ -154,6 +156,6 @@ Host 还可消费 `recuvora.monitoring_view.v1` 能力下的只读 `describe_mon
 
 [固定 JSON 样例](protocol-v1-vectors.json)覆盖七种消息、两种角色、三种 outcome、拒绝未知消息和字段等形状规则。`tests/protocol.rs` 校验样例、Ready 缺省列表、ID 边界及部分 schema/value 限额；Host 既有隔离网络夹具验证握手、命名空间、白名单、取消/断连 Unknown、回调与业务消费。节点须使用自己的实现测试样例，不能以引用 Host 类型代替互操作验证。
 
-这些检查不穷尽协议边界。全部字节、schema 深度、声明数量等限额的兼容覆盖仍需完善；现有 HOST-001 回调结果分类和 HOST-002 Harness schema 校验缺口见[实现状态](implementation-status.md)。协议归属调整不会自动修复这些消费路径。
+这些检查不穷尽协议边界。全部字节、schema 深度、声明数量等限额的兼容覆盖仍需完善；回调分类、Unknown 保留及 Harness 声明 schema 的固定回归与实际验证结果见[实现状态](implementation-status.md)。
 
 协议夹具不联系真实提供方，也不证明实际节点认证、执行者停止、脚本沙箱、业务恢复、跨机部署或长期稳定性。上述事实须由实际节点、应用及部署分别核验。

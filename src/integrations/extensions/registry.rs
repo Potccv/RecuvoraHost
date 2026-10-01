@@ -5,7 +5,7 @@ use super::{
 };
 use super::{ExtensionDefinition, ExtensionsConfig, NodeSettings};
 use crate::protocol;
-use recuvora_core::operation::{CallScope, DispatchError};
+use crate::runtime::operation::{CallScope, DispatchError};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;

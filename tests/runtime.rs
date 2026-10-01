@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 
 #[tokio::test]
 async fn dropped_caller_keeps_call_owned_until_cleanup_and_shutdown_can_resume() {
-    use recuvora_core::operation::{CallScope, Cancellation, DispatchError};
+    use recuvora_host::runtime::operation::{CallScope, Cancellation, DispatchError};
     let scope = CallScope::default();
     let token = Cancellation::new();
     let (started_tx, started_rx) = oneshot::channel();

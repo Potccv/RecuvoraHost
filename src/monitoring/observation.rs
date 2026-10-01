@@ -1,6 +1,6 @@
 //! Read-only observation contracts implemented by embedding applications.
 use super::{DiscoveryFuture, MonitorError};
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;

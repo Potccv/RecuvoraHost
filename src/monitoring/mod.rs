@@ -17,7 +17,7 @@ pub use discovery::{
     DiscoveryBatch, DiscoveryFuture, DiscoverySnapshot, DiscoveryTarget, MonitorDiscovery,
 };
 pub use engine::MonitorEngine;
-pub use handle::MonitorHandle;
+pub use handle::{MonitorHandle, MonitorIncidentLease};
 pub use observation::{
     BatchCoverage, ObservationBatch, ObservationFuture, ObservationRequest, ObservationSample,
     ObservationSource,
@@ -25,7 +25,7 @@ pub use observation::{
 pub use rules::{MonitorRule, RuleOperator};
 pub use snapshot::{Coverage, Freshness, MonitorSnapshot, MonitoringSnapshot, TargetHealth};
 
-use recuvora_core::recovery::incidents::IncidentError;
+use crate::persistence::incidents::IncidentError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

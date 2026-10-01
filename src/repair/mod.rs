@@ -5,7 +5,7 @@ use crate::harnesses::{
     HarnessRunRequest, HarnessTool, HarnessToolCall, HarnessToolFuture, HarnessToolHandler,
     HarnessToolResult,
 };
-use recuvora_core::recovery::approval::{
+use crate::persistence::approval::{
     ApprovalDecision, ApprovalError, ApprovalPolicy, ApprovalRecord, ApprovalState, ApprovalStore,
     ApprovalStoreConfig, ExecutionOutcome, ModelAssessment, ProposedOperation, ReviewerConfig,
     ReviewerIdentity,

@@ -5,7 +5,7 @@ use super::{
     Coverage, Freshness, MonitorDefinition, MonitorError, MonitorSnapshot, MonitoringSnapshot,
     TargetHealth,
 };
-use recuvora_core::recovery::incidents::{
+use crate::persistence::incidents::{
     IncidentError, IncidentKind, IncidentRecord, IncidentStatus, SignalCondition,
 };
 use std::sync::Arc;
@@ -16,7 +16,49 @@ pub struct MonitorHandle {
     pub(super) shared: Arc<Shared>,
 }
 
+/// An owned gate prevents observation and acknowledgement commits from crossing
+/// the authorization-to-send interval; freshness must still be rechecked.
+pub struct MonitorIncidentLease {
+    handle: MonitorHandle,
+    incident_id: String,
+    target_id: String,
+    minimum_revision: u64,
+    _registration: tokio::sync::OwnedMutexGuard<()>,
+}
+impl MonitorIncidentLease {
+    pub fn current(&self) -> Result<IncidentRecord, MonitorError> {
+        self.handle.repair_incident_registered(
+            &self.incident_id,
+            &self.target_id,
+            self.minimum_revision,
+        )
+    }
+}
+
 impl MonitorHandle {
+    pub async fn acquire_repair_incident(
+        &self,
+        incident_id: &str,
+        target_id: &str,
+        minimum_revision: u64,
+    ) -> Result<MonitorIncidentLease, MonitorError> {
+        let registration = self.shared.registration.clone().lock_owned().await;
+        let lease = MonitorIncidentLease {
+            handle: self.clone(),
+            incident_id: incident_id.into(),
+            target_id: target_id.into(),
+            minimum_revision,
+            _registration: registration,
+        };
+        lease.current()?;
+        Ok(lease)
+    }
+
+    fn registration(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, MonitorError> {
+        self.shared.registration.try_lock().map_err(|_| {
+            MonitorError::Runtime("monitor authority is busy with a dispatch or commit".into())
+        })
+    }
     pub fn snapshot(&self) -> Result<MonitoringSnapshot, MonitorError> {
         Ok(MonitoringSnapshot {
             monitors: lock(&self.shared.views)?.values().cloned().collect(),
@@ -73,7 +115,7 @@ impl MonitorHandle {
         minimum_revision: u64,
         callback: impl FnOnce(IncidentRecord) -> R,
     ) -> Result<R, MonitorError> {
-        let _registration = lock(&self.shared.registration)?;
+        let _registration = self.registration()?;
         let record = self.repair_incident_registered(incident_id, target_id, minimum_revision)?;
         Ok(callback(record))
     }
@@ -160,6 +202,7 @@ impl MonitorHandle {
         actor: &str,
         note: &str,
     ) -> Result<IncidentRecord, MonitorError> {
+        let _registration = self.registration()?;
         let mut store = lock(&self.shared.store)?;
         if !self.shared.accepting.load(Ordering::Acquire) {
             return Err(MonitorError::Stopped);
@@ -181,9 +224,19 @@ impl MonitorHandle {
         }
     }
     pub fn begin_shutdown(&self) -> Result<(), MonitorError> {
-        let _registration = lock(&self.shared.registration)?;
+        let _registration = self.registration()?;
+        self.stop_registered()
+    }
+    pub(crate) async fn begin_shutdown_async(&self) -> Result<(), MonitorError> {
+        let _registration = self.shared.registration.lock().await;
+        self.stop_registered()
+    }
+    pub(crate) fn request_stop(&self) {
         self.shared.accepting.store(false, Ordering::Release);
         self.shared.cancellation.cancel();
+    }
+    fn stop_registered(&self) -> Result<(), MonitorError> {
+        self.request_stop();
         for view in lock(&self.shared.views)?.values_mut() {
             view.running = false;
             view.health = TargetHealth::Unknown;
@@ -207,6 +260,7 @@ impl MonitorHandle {
                 .await
                 .map_err(|_| MonitorError::Runtime("monitor supervisor disappeared".into()))?;
         }
+        let _registration = self.shared.registration.lock().await;
         lock(&self.shared.store)?.close()?;
         if let Some(error) = lock(&self.shared.error)?.clone() {
             return Err(MonitorError::Runtime(error));

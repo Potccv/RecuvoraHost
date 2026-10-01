@@ -1,6 +1,6 @@
 //! Independent, tool-free approval review and explicit human escalation.
 use super::*;
-use recuvora_core::recovery::approval::ReviewAttempt;
+use crate::persistence::approval::ReviewAttempt;
 
 impl RepairTools {
     pub(super) async fn review(

@@ -2,7 +2,7 @@
 use super::super::config::binding;
 use super::super::{MonitorDefinition, MonitorError};
 use super::MonitorState;
-use recuvora_core::recovery::incidents::IncidentStore;
+use crate::persistence::incidents::IncidentStore;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 

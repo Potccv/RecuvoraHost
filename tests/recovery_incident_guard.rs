@@ -1,13 +1,11 @@
-use recuvora_core::{
-    operation::Cancellation,
-    recovery::{
-        approval::{ApprovalDecision, ApprovalPolicy, ApprovalState, ReviewerConfig},
-        incidents::{IncidentKind, IncidentRecord, IncidentStatus, SignalCondition},
-        knowledge::ScriptArtifact,
-    },
+use recuvora_core::recovery::{
+    approval::{ApprovalDecision, ApprovalPolicy, ApprovalState, ReviewerConfig},
+    incidents::{IncidentKind, IncidentRecord, IncidentStatus, SignalCondition},
+    knowledge::ScriptArtifact,
 };
 use recuvora_host::integrations::recovery::*;
 use recuvora_host::monitoring::*;
+use recuvora_host::runtime::operation::Cancellation;
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -18,6 +16,8 @@ use std::{
     time::Duration,
 };
 
+#[allow(dead_code)]
+mod network_fixture;
 #[path = "workflow_support.rs"]
 mod support;
 use support::TestDir;
@@ -223,7 +223,6 @@ fn config() -> RecoveryConfig {
         max_diagnoses: 2,
         minimum_script_occurrences: 2,
         max_tasks: 16,
-        max_journal_bytes: 4 * 1024 * 1024,
     }
 }
 
@@ -835,24 +834,187 @@ async fn registration_gate_covers_the_authorization_callback_until_it_returns() 
     shutdown_started_rx
         .recv_timeout(Duration::from_secs(1))
         .unwrap();
-    let blocked = matches!(
-        shutdown_done_rx.recv_timeout(Duration::from_millis(50)),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-    );
+    let returned_without_blocking = shutdown_done_rx
+        .recv_timeout(Duration::from_millis(500))
+        .is_ok();
     // Always release the bounded test barrier before inspecting assertions.
     release_tx.send(()).unwrap();
     let returned_id = callback.join().unwrap().unwrap();
-    shutting_down.join().unwrap().unwrap();
+    assert!(shutting_down.join().unwrap().is_err());
     reader.join().unwrap();
     assert!(
-        blocked,
-        "shutdown crossed the active authorization callback"
+        returned_without_blocking,
+        "synchronous shutdown must reject a busy authority instead of blocking a runtime thread"
     );
     assert_eq!(returned_id, incident.id);
     assert_eq!(
         reads.unwrap(),
         (incident.id, "monitor-a".into(), "monitor-a".into())
     );
+    handle.begin_shutdown().unwrap();
     assert!(!handle.snapshot().unwrap().running);
     monitor.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_incident_lease_blocks_mutation_without_blocking_runtime_and_rechecks_freshness() {
+    let dir = TestDir::new("owned-incident-dispatch-gate");
+    let source = Arc::new(Source::new());
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        source.clone(),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    let handle = monitor.handle();
+    let incident = active_incident(&handle).await;
+    let lease = handle
+        .acquire_repair_incident(&incident.id, "target-a", incident.revision)
+        .await
+        .unwrap();
+    assert_eq!(lease.current().unwrap().revision, incident.revision);
+    assert!(
+        handle
+            .acknowledge(&incident.id, incident.revision, "operator", "busy lease")
+            .is_err()
+    );
+    assert!(
+        handle
+            .repair_incident(&incident.id, "target-a", incident.revision)
+            .is_err()
+    );
+    source.set(HEALTHY);
+    // The monitor writer waits asynchronously; the runtime still advances timers.
+    tokio::time::advance(Duration::from_millis(1100)).await;
+    assert_eq!(
+        handle.incident(&incident.id).unwrap().unwrap().revision,
+        incident.revision
+    );
+    assert!(
+        lease.current().is_err(),
+        "holding the mutation gate must not freeze evidence age"
+    );
+    drop(lease);
+    wait_for(|| handle.incident(&incident.id).unwrap().unwrap().status == IncidentStatus::Resolved)
+        .await;
+    monitor.shutdown().await.unwrap();
+}
+
+struct MonitorNetworkGate {
+    lease: std::sync::Mutex<Option<Box<dyn IncidentDispatchLease>>>,
+    handle: MonitorHandle,
+    incident: IncidentRecord,
+    released: tokio::sync::Notify,
+}
+impl recuvora_host::integrations::extensions::DispatchGuard for MonitorNetworkGate {
+    fn validate(&self) -> Result<(), recuvora_host::integrations::extensions::ExtensionError> {
+        use recuvora_host::integrations::extensions::ExtensionError;
+        assert!(
+            self.handle
+                .acknowledge(
+                    &self.incident.id,
+                    self.incident.revision,
+                    "operator",
+                    "network boundary"
+                )
+                .is_err()
+        );
+        match self.lease.lock().unwrap().as_ref().unwrap().current() {
+            Ok(IncidentReadiness::Active { .. }) => Ok(()),
+            result => Err(ExtensionError::Rejected(format!(
+                "dispatch evidence unavailable: {result:?}"
+            ))),
+        }
+    }
+    fn release(&self) {
+        self.lease.lock().unwrap().take();
+        self.released.notify_one();
+    }
+}
+
+#[tokio::test]
+async fn production_incident_lease_reaches_network_send_and_stale_evidence_sends_nothing() {
+    use recuvora_host::integrations::extensions::{
+        ExtensionCall, ExtensionError, ProtocolSettings,
+    };
+    for expire in [false, true] {
+        let dir = TestDir::new("incident-network-dispatch");
+        let source = Arc::new(Source::new());
+        let mut monitor = MonitorEngine::start_with_source(
+            monitor_config(),
+            source.clone(),
+            dir.path.join("monitor"),
+        )
+        .unwrap();
+        let handle = monitor.handle();
+        let incident = active_incident(&handle).await;
+        let fixture =
+            network_fixture::Fixture::start("http", network_fixture::Behavior::WaitForCancel, None)
+                .await
+                .unwrap();
+        let client = fixture.client(None);
+        let metadata = client.probe().await.unwrap();
+        let authority = guard(handle.clone());
+        let context = problem(&incident);
+        let lease = authority.acquire_dispatch(&context).await.unwrap();
+        let gate = Arc::new(MonitorNetworkGate {
+            lease: std::sync::Mutex::new(Some(lease)),
+            handle: handle.clone(),
+            incident,
+            released: tokio::sync::Notify::new(),
+        });
+        source.set(HEALTHY);
+        if expire {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+        }
+        let token = Cancellation::new();
+        let cancel = token.clone();
+        let dispatch = gate.clone();
+        let pending = tokio::spawn(async move {
+            client
+                .call_with_dispatch_guard(
+                    ExtensionCall {
+                        contract: "com.example.network".into(),
+                        version: 1,
+                        method: "query".into(),
+                        params: json!({"target":"target-a"}),
+                        timeout: Duration::from_secs(5),
+                    },
+                    metadata,
+                    token,
+                    None,
+                    None,
+                    &ProtocolSettings::default(),
+                    Some(dispatch),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), gate.released.notified())
+            .await
+            .unwrap();
+        wait_for(|| {
+            handle.incident(&gate.incident.id).unwrap().unwrap().status == IncidentStatus::Resolved
+        })
+        .await;
+        if !expire {
+            fixture.state.wait_for_dispatch().await;
+            assert!(!pending.is_finished());
+            cancel.cancel();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(5), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fixture.state.calls.load(Ordering::SeqCst),
+            usize::from(!expire)
+        );
+        if expire {
+            assert!(matches!(result, Err(ExtensionError::Rejected(_))));
+        } else {
+            assert!(matches!(result, Err(ExtensionError::Unknown { .. })));
+        }
+        fixture.shutdown().await;
+        monitor.shutdown().await.unwrap();
+    }
 }

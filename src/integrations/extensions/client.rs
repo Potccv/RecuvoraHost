@@ -3,7 +3,7 @@ use super::{
     ExtensionError, ExtensionKind, ExtensionMetadata, Message, NetworkEndpoint, Outcome,
     ProtocolSettings, call_id, valid_id,
 };
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -19,6 +19,31 @@ pub trait CallbackHandler: Send + Sync {
         params: Value,
         cancellation: Cancellation,
     ) -> CallbackFuture<'a>;
+}
+
+/// Trusted authority held from durable authorization through the actual Call send.
+/// Validation runs after connection/identity checks, immediately before sending.
+/// Release must be idempotent and must not authorize another dispatch.
+pub trait DispatchGuard: Send + Sync {
+    fn validate(&self) -> Result<(), ExtensionError>;
+    fn release(&self);
+}
+
+struct DispatchHold(Option<Arc<dyn DispatchGuard>>);
+impl DispatchHold {
+    fn validate(&self) -> Result<(), ExtensionError> {
+        self.0.as_ref().map_or(Ok(()), |guard| guard.validate())
+    }
+    fn release(&mut self) {
+        if let Some(guard) = self.0.take() {
+            guard.release();
+        }
+    }
+}
+impl Drop for DispatchHold {
+    fn drop(&mut self) {
+        self.release();
+    }
 }
 
 #[derive(Clone)]
@@ -89,6 +114,30 @@ impl ExtensionClient {
         permit: Option<tokio::sync::OwnedSemaphorePermit>,
         settings: &ProtocolSettings,
     ) -> Result<Value, ExtensionError> {
+        self.call_with_dispatch_guard(
+            call,
+            expected,
+            cancellation,
+            handler,
+            permit,
+            settings,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn call_with_dispatch_guard(
+        &self,
+        call: ExtensionCall,
+        expected: ExtensionMetadata,
+        cancellation: Cancellation,
+        handler: Option<Arc<dyn CallbackHandler>>,
+        permit: Option<tokio::sync::OwnedSemaphorePermit>,
+        settings: &ProtocolSettings,
+        dispatch_guard: Option<Arc<dyn DispatchGuard>>,
+    ) -> Result<Value, ExtensionError> {
+        let dispatch = DispatchHold(dispatch_guard);
         settings.validate()?;
         if call.timeout.is_zero() || call.timeout > Duration::from_secs(1800) {
             return Err(ExtensionError::Rejected(
@@ -98,19 +147,31 @@ impl ExtensionClient {
         let mut guard = CancelOnDrop(Some(cancellation.clone()));
         let client = self.clone();
         let settings = settings.clone();
+        let id = call_id();
+        let supervisor_id = id.clone();
         let task = tokio::spawn(async move {
             let _permit = permit;
             client
-                .call_inner(call, expected, cancellation, handler, settings)
+                .call_inner(
+                    call,
+                    expected,
+                    cancellation,
+                    handler,
+                    settings,
+                    id,
+                    dispatch,
+                )
                 .await
         });
-        let result = task
-            .await
-            .map_err(|e| ExtensionError::Unavailable(format!("supervisor failed: {e}")))?;
+        let result = task.await.map_err(|e| ExtensionError::Unknown {
+            call_id: supervisor_id,
+            message: format!("supervisor failed: {e}"),
+        })?;
         guard.0 = None;
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn call_inner(
         &self,
         call: ExtensionCall,
@@ -118,6 +179,8 @@ impl ExtensionClient {
         cancellation: Cancellation,
         handler: Option<Arc<dyn CallbackHandler>>,
         settings: ProtocolSettings,
+        id: String,
+        mut dispatch: DispatchHold,
     ) -> Result<Value, ExtensionError> {
         if cancellation.is_cancelled() {
             return Err(ExtensionError::Cancelled);
@@ -133,7 +196,11 @@ impl ExtensionClient {
             session.close().await;
             return Err(ExtensionError::Cancelled);
         }
-        let id = call_id();
+        if let Err(error) = dispatch.validate() {
+            dispatch.release();
+            session.close().await;
+            return Err(error);
+        }
         let message = Message::Call {
             id: id.clone(),
             contract: call.contract,
@@ -145,13 +212,17 @@ impl ExtensionClient {
                 .max(1),
         };
         let result = async {
-            session.send(&message).await?;
+            let sent = session.send(&message).await;
+            dispatch.release();
+            sent?;
             let deadline = tokio::time::sleep(call.timeout);
             tokio::pin!(deadline);
             let mut callback: Option<tokio::task::JoinHandle<(String, Result<Value, ExtensionError>)>> = None;
             let mut seen = std::collections::BTreeSet::new();
             let mut count = 0usize;
             let mut cancelled = false;
+            // A model completion cannot settle an uncertain trusted side effect.
+            let mut callback_unknown = None;
             let cancel_grace = tokio::time::sleep(settings.cancel_grace());
             tokio::pin!(cancel_grace);
             let outcome = loop {
@@ -170,8 +241,21 @@ impl ExtensionClient {
                     done = async { match &mut callback { Some(task) => task.await, None => std::future::pending().await } } => {
                         callback = None;
                         let (callback_id, result) = match done { Ok(v) => v, Err(e) => break Err(ExtensionError::Protocol(format!("trusted callback failed: {e}"))) };
-                        let reply = match result { Ok(result) => Message::Result {id:callback_id,result}, Err(e) => Message::Error {id:callback_id,code:"tool_rejected".into(),message:e.to_string(),outcome:Outcome::Rejected} };
-                        if let Err(e) = session.send(&reply).await { break Err(e); }
+                        let reply_id = callback_id.clone();
+                        let reply = match result {
+                            Ok(result) => Message::Result {id:callback_id,result},
+                            Err(error) => {
+                                let outcome = callback_outcome(&error);
+                                let message = error.to_string();
+                                if outcome == Outcome::Unknown && callback_unknown.is_none() {
+                                    callback_unknown = Some(callback_uncertainty(error, callback_id.clone()));
+                                }
+                                Message::Error {id:callback_id,code:match outcome { Outcome::Rejected => "tool_rejected", Outcome::Cancelled => "tool_cancelled", Outcome::Unknown => "tool_unknown" }.into(),message,outcome}
+                            }
+                        };
+                        // The trusted callback has already run. Even a local
+                        // encoding/frame rejection cannot prove no side effect.
+                        if let Err(e) = session.send(&reply).await { break Err(callback_uncertainty(e, reply_id)); }
                     }
                     message = session.recv() => {
                         count += 1;
@@ -193,11 +277,21 @@ impl ExtensionClient {
                 }
             };
             if callback.is_some() { cancellation.cancel(); }
-            if let Some(task) = callback { let _ = task.await; }
-            outcome
+            if let Some(task) = callback {
+                match task.await {
+                    Ok((callback_id, Err(error))) if callback_outcome(&error) == Outcome::Unknown => {
+                        callback_unknown.get_or_insert(callback_uncertainty(error, callback_id));
+                    }
+                    Err(error) => {
+                        callback_unknown.get_or_insert(ExtensionError::Unknown {call_id:id.clone(), message:format!("trusted callback cleanup failed: {error}")});
+                    }
+                    _ => {}
+                }
+            }
+            callback_unknown.map_or(outcome, Err)
         }.await;
         let exited = session.close().await;
-        let result = if exited {
+        let result = if exited || matches!(&result, Err(ExtensionError::Unknown { .. })) {
             result
         } else {
             Err(ExtensionError::Unknown {
@@ -213,6 +307,24 @@ impl ExtensionClient {
                 message: other.to_string(),
             },
         })
+    }
+}
+
+fn callback_outcome(error: &ExtensionError) -> Outcome {
+    match error {
+        ExtensionError::Rejected(_) | ExtensionError::Configuration(_) => Outcome::Rejected,
+        ExtensionError::Cancelled => Outcome::Cancelled,
+        _ => Outcome::Unknown,
+    }
+}
+
+fn callback_uncertainty(error: ExtensionError, call_id: String) -> ExtensionError {
+    match error {
+        ExtensionError::Unknown { .. } => error,
+        other => ExtensionError::Unknown {
+            call_id,
+            message: other.to_string(),
+        },
     }
 }
 

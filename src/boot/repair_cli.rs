@@ -2,10 +2,10 @@
 use super::host::{HostConfig, HostRuntime};
 use crate::cli::repair::{self, Arguments};
 use crate::harnesses::HarnessCancellation;
-use crate::repair::{RepairSession, WorkflowError, now};
-use recuvora_core::recovery::approval::{
+use crate::persistence::approval::{
     ApprovalDecision, ApprovalStore, ApprovalStoreConfig, ReviewerConfig,
 };
+use crate::repair::{RepairSession, WorkflowError, now};
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::io::{self, Write};
@@ -80,7 +80,7 @@ async fn execute(args: Arguments, token: HarnessCancellation) -> Result<Value, W
         if args.command == "inspect" {
             return Ok(match args.request {
                 Some(id) => {
-                    json!({"status":"ok","record":store.get(&id).ok_or(recuvora_core::recovery::approval::ApprovalError::NotFound)?})
+                    json!({"status":"ok","record":store.get(&id).ok_or(crate::persistence::approval::ApprovalError::NotFound)?})
                 }
                 None => json!({"status":"ok","records":store.list()}),
             });
@@ -170,7 +170,7 @@ async fn execute(args: Arguments, token: HarnessCancellation) -> Result<Value, W
                 &token,
             )?;
             Ok(
-                json!({"status":match record.state {recuvora_core::recovery::approval::ApprovalState::Executed=>"completed",recuvora_core::recovery::approval::ApprovalState::Unknown=>"unknown",_=>"failed"},"record":record,"business_verified":false,"auto_retry":false}),
+                json!({"status":match record.state {crate::persistence::approval::ApprovalState::Executed=>"completed",crate::persistence::approval::ApprovalState::Unknown=>"unknown",_=>"failed"},"record":record,"business_verified":false,"auto_retry":false}),
             )
         }
         "check-result" => Ok(

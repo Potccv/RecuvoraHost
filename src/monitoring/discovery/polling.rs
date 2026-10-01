@@ -2,7 +2,7 @@
 use super::super::shared::{Shared, worker_finished};
 use super::super::{MonitorError, ObservationRequest, ObservationSource};
 use super::DiscoveryState;
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -38,7 +38,11 @@ async fn run(
                 Err(MonitorError::Observation("discovery deadline elapsed".into()))
             }
         };
-        match result.and_then(|batch| state.accept(batch, source.clone(), &shared)) {
+        let accepted = match result {
+            Ok(batch) => state.accept(batch, source.clone(), &shared).await,
+            Err(error) => Err(error),
+        };
+        match accepted {
             Ok(()) => {}
             Err(MonitorError::Stopped) => break,
             Err(error @ MonitorError::Incident(_)) | Err(error @ MonitorError::Runtime(_)) => {
@@ -74,6 +78,6 @@ pub(in crate::monitoring) fn launch(
         {
             view.running = false;
         }
-        worker_finished(&shared);
+        worker_finished(&shared).await;
     });
 }

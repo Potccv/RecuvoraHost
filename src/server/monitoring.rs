@@ -2,8 +2,8 @@
 use super::*;
 use crate::integrations::extensions::MonitoringViewRegistration;
 use crate::monitoring::{MonitorError, MonitorSnapshot, MonitoringSnapshot};
+use crate::persistence::incidents::{IncidentError, IncidentRecord};
 use crate::protocol::{ExtensionError, ExtensionKind, valid_id};
-use recuvora_core::recovery::incidents::{IncidentError, IncidentRecord};
 use std::collections::BTreeSet;
 
 const MAX_VIEW_BYTES: usize = 32 * 1024;
@@ -757,9 +757,7 @@ pub(super) async fn acknowledge(
 ) -> Result<Json<Value>, ApiError> {
     state.require("incident.read")?;
     state.require("incident.acknowledge")?;
-    if input.note.len() > recuvora_core::recovery::incidents::MAX_ACK_NOTE_BYTES
-        || input.revision == 0
-    {
+    if input.note.len() > crate::persistence::incidents::MAX_ACK_NOTE_BYTES || input.revision == 0 {
         return Err(ApiError::invalid(
             "revision and a bounded acknowledgement note are required",
         ));

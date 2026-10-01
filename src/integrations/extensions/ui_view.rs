@@ -3,7 +3,7 @@ use super::ExtensionRegistry;
 use super::registry::{dispatch_error, method_for};
 use super::{ExtensionCall, ExtensionError, ExtensionKind};
 use crate::protocol;
-use recuvora_core::operation::Cancellation;
+use crate::runtime::operation::Cancellation;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;

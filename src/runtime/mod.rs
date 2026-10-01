@@ -3,6 +3,8 @@
 //! A runtime has one startup/shutdown cycle. Scope is an exact string namespace;
 //! there is no hierarchy, hot replacement, or process isolation in this crate.
 
+pub mod operation;
+
 mod context;
 mod contracts;
 mod dependencies;

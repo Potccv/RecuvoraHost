@@ -21,6 +21,6 @@ repair的harness_config与extensions_config引用外部活动文件，target-cop
 
 monitor占位接口约定com.example.observation没有内置提供方；由兼容插件/节点提供只读观察。监控自身不自动派发修复，确认收到也不解除故障。只有显式填写 recovery_config 或调用 HostRuntime.start_recovery 才会启动恢复流程调度器，处理按配置绑定的目标故障。
 
-恢复流程模板的 recovery、approval_store、knowledge_store 直接采用 Core 类型；外层 data_dir 和必填 ownership_dir 相对活动恢复流程配置解析，彼此及与 console/旧修复状态分开。保护同一规范目标的所有恢复存储共用一个稳定 ownership_dir，未完成或 Unknown 不得通过更换目录绕过互斥；已有配置须补充该字段。替换 Harness、executor 与 monitor 身份时须同时更新对应配置和准确方法白名单。节点需实现 recuvora.repair v1；核实未知执行结果额外需要只读 reconcile。模板不包含执行节点或任何实际业务恢复结论。
+恢复流程模板的 recovery 采用 Core 领域类型，approval_store、knowledge_store 为 Host 的存储限额配置；外层 data_dir 和必填 ownership_dir 相对活动恢复流程配置解析，彼此及与 console/旧修复状态分开。保护同一规范目标的所有恢复存储共用一个稳定 ownership_dir，未完成或 Unknown 不得通过更换目录绕过互斥；已有配置须补充该字段。替换 Harness、executor 与 monitor 身份时须同时更新对应配置和准确方法白名单。节点需实现 recuvora.repair v1；核实未知执行结果额外需要只读 reconcile。模板不包含执行节点或任何实际业务恢复结论。
 
 字段和边界见[配置说明](../docs/configuration.md)，接口见[HTTP说明](../docs/console-api.md)，开发规范见 [AGENTS](AGENTS.md)。

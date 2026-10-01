@@ -6,6 +6,7 @@ pub mod configuration;
 pub mod harnesses;
 pub mod integrations;
 pub mod monitoring;
+pub mod persistence;
 mod presentation;
 pub mod protocol;
 pub mod repair;

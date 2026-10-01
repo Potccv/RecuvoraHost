@@ -28,6 +28,6 @@ repair 方法只能由 kind: node 提供；inspect、verify、可选 reconcile �
 
 消息关联、schema 和连接状态仅证明结构或传输条件，不证明提供方事实真实。取消和连接关闭不证明外部执行者停止；不确定副作用保持 Unknown。
 
-当前实现仍有回调 Unknown 被转换为 Rejected、Harness 调用未执行声明 schema 校验两项缺口。上面的协议语义是接口要求，不能视为这两处路径已完整落实；复现与关闭条件见[已知问题](implementation-status.md)。
+Host 保留回调结果分类，Unknown 不被顶层成功覆盖；Harness 方法在派发前和接收结果后执行声明 schema 校验。具体结果规则见[扩展协议 v1](extension-protocol-v1.md#标识版本与结果含义)，固定回归与当前验收范围见[实现状态](implementation-status.md)。
 
 验证边界见[实现状态](implementation-status.md)，初始化见[插件](plugins.md)。

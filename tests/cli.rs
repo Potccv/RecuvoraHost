@@ -40,7 +40,7 @@ async fn repair_help_and_argument_errors_do_not_load_configuration() -> TestResu
 #[cfg(windows)]
 #[tokio::test]
 async fn repair_cli_persists_human_decision_and_rejects_a_control_directory_target() -> TestResult {
-    use recuvora_core::recovery::approval::{
+    use recuvora_host::persistence::approval::{
         ApprovalPolicy, ApprovalStore, ApprovalStoreConfig, ProposedOperation, ReviewerConfig,
     };
     use recuvora_host::repair::{RepairConfig, now};
@@ -175,7 +175,7 @@ async fn demo_checks_expected_faults_without_failing_the_process() -> TestResult
 #[cfg(windows)]
 #[tokio::test]
 async fn repair_cli_rejects_target_owned_extension_configuration_and_tls_trust() -> TestResult {
-    use recuvora_core::recovery::approval::{ApprovalPolicy, ReviewerConfig};
+    use recuvora_host::persistence::approval::{ApprovalPolicy, ReviewerConfig};
     use recuvora_host::repair::RepairConfig;
     let temp = TestDirectory::create()?;
     for directory in ["target", "review", "state"] {
@@ -310,7 +310,7 @@ async fn invalid_arguments_and_source_data_directory_fail_cleanly() -> TestResul
 
 #[tokio::test]
 async fn repair_cli_rejects_host_source_target_before_creating_approval_state() -> TestResult {
-    use recuvora_core::recovery::approval::{ApprovalPolicy, ReviewerConfig};
+    use recuvora_host::persistence::approval::{ApprovalPolicy, ReviewerConfig};
     use recuvora_host::repair::RepairConfig;
     let temp = TestDirectory::create()?;
     fs::create_dir(temp.path.join("review"))?;
@@ -387,8 +387,8 @@ async fn harness_help_describes_the_available_commands_without_loading_configura
 #[tokio::test]
 async fn unsupported_human_then_harness_policy_rejects_execution_before_state_creation()
 -> TestResult {
-    use recuvora_core::recovery::approval::{ApprovalPolicy, ReviewerConfig};
     use recuvora_host::boot::host::load_repair_config;
+    use recuvora_host::persistence::approval::{ApprovalPolicy, ReviewerConfig};
     use recuvora_host::repair::RepairConfig;
 
     let temp = TestDirectory::create()?;
