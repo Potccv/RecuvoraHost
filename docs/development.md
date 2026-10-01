@@ -8,7 +8,7 @@
 2. 将 `CARGO_TARGET_DIR` 设置为源码外的专用绝对构建路径，将 `RECUVORA_TEST_TEMP` 设置为源码外的约定测试根。两者不能落在 Host 或本地依赖源码内，也不能经链接写入这些目录。
 3. 活动配置、状态与凭据单独放在源码外。开发检查使用隔离节点替身，不需要实际提供方账号或活动部署。
 
-Cargo 构建需要 Rust 工具链；[check.rs](../scripts/windows/check.rs)由现有 Cargo 包编译运行。Node.js 仅用于可选的外部 UI 客户端检查，不是 Host 的构建依赖。
+Cargo 构建需要 Rust 工具链；[check.rs](../scripts/windows/check.rs)由现有 Cargo 包编译运行。Host 构建与测试均不需要 Node.js。
 
 ## 构建与检查
 
@@ -34,7 +34,7 @@ cargo test --locked --test protocol
 
 实现改动完成后运行相关格式、编译、静态检查和测试，按影响范围选择完整检查。纯文档整理核对链接、锚点、命令与字段即可。不要以未运行的检查、过去的测试数量或隔离替身作为本次交付证据。
 
-测试范围、故障注入及可选 `ui_contract.mjs` 的使用见 [测试说明](../tests/README.md)。测试只清理本次记录的临时资源，不清空共享测试根或活动部署。
+测试范围、故障注入及 `ui_contract.rs` 的默认检查和可选外部 UI 资产检查见 [测试说明](../tests/README.md)。测试只清理本次记录的临时资源，不清空共享测试根或活动部署。
 
 ## 修改与交付
 

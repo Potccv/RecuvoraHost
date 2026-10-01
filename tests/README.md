@@ -37,17 +37,23 @@ cargo run --locked --features dev-check --bin recuvora-host-check -- --build-dir
 
 也可使用`cargo test --all-targets --locked`单独运行本包测试。脚本包括格式、check、测试、文档示例和Clippy，环境与工作目录只设置在检查子进程中，不改变调用方。每个测试只清理自己记录的临时路径，失败调查后也须精确清理，不清空共享根或活动部署。
 
-## 可选真实客户端接口约定检查
+## UI HTTP 接口约定检查
 
-[ui_contract.mjs](ui_contract.mjs)是额外Node.js检查，参数依次为已经构建的Host程序、外部UI静态文件目录和源码外测试根：
+[ui_contract.rs](ui_contract.rs)由 Cargo 登记并编译 Host 程序，以 Rust HTTP 客户端访问独立 Host 子进程。默认用隔离静态文件替身检查身份/来源/权限、模拟、重复 ID、强停重启后的 Unknown，以及完整允许表中静态文件的字节一致性；包含在默认 Cargo 检查中，无需 Node.js：
 
 ```powershell
-node ./tests/ui_contract.mjs $env:RECUVORA_HOST_BINARY $env:RECUVORA_UI_DIST $env:RECUVORA_TEST_TEMP
+cargo test --locked --test ui_contract
 ```
 
-该脚本使用实际UI的api.js访问Host子进程HTTP，覆盖身份/来源/权限、模拟、重复ID、强停重启后的Unknown和静态文件字节一致性。随机临时令牌仅用于本次测试，结束后按记录路径清理。它不属于默认Cargo脚本，Node不是Host编译的必需依赖。
+先按上文设置外部构建目录和测试根。可选外部资产用例默认 ignored，显式设置 `RECUVORA_UI_DIST` 为已构建的 UI 静态文件目录后运行：
 
-此检查使用真实HTTP与客户端代码，但不启动浏览器或Tauri窗口，也不调用实际模型/节点，不证明业务恢复或跨机部署。全部测试都不能把确认收到、请求接受或文本读回当作授权与恢复事实。规则见 [AGENTS](AGENTS.md)。
+```powershell
+cargo test --locked --test ui_contract external_ui_assets_and_http_contract -- --ignored --exact
+```
+
+测试只启动本次构建的 Host，使用随机临时令牌，并在源码外创建独立测试目录；关闭子进程后按记录路径清理。外部 UI 资产仅供读取，不触碰活动部署。
+
+两个用例都使用真实 HTTP，但不执行 UI 的 `api.js`，不验证 JavaScript 客户端的错误转换、自动重试策略或浏览器/Tauri 交互。客户端行为由 UI 项目另行验证；这些用例也不调用实际模型/节点，不证明业务恢复或跨机部署。全部测试都不能把确认收到、请求接受或文本读回当作授权与恢复事实。规则见 [AGENTS](AGENTS.md)。
 
 恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
 

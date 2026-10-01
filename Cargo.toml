@@ -62,6 +62,10 @@ name = "cli"
 path = "tests/cli.rs"
 
 [[test]]
+name = "ui_contract"
+path = "tests/ui_contract.rs"
+
+[[test]]
 name = "protocol"
 path = "tests/protocol.rs"
 
