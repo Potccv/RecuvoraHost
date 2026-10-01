@@ -148,6 +148,17 @@ impl ExtensionRegistry {
         cancellation: Cancellation,
     ) -> Result<Value, ExtensionError> {
         let entry = self.entry(id)?;
+        if method == super::UI_LINKS_METHOD
+            && entry
+                .metadata
+                .capabilities
+                .iter()
+                .any(|capability| capability == super::UI_LINKS_CAPABILITY)
+        {
+            return Err(ExtensionError::Rejected(
+                "page descriptors require the isolated page refresh route".into(),
+            ));
+        }
         let declaration = method_for(entry, contract, version, method)?;
         if !declaration.read_only || contract.starts_with("recuvora.") {
             return Err(ExtensionError::Rejected(

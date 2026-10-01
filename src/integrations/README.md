@@ -9,4 +9,4 @@
 | [monitoring](monitoring/README.md) | 将外部只读接口约定映射为 Host ObservationSource 与发现来源 |
 | [recovery](recovery/README.md) | 将修复节点和 Harness 映射为 Host RepairBackend，并向 Core 领域状态机提交证据 |
 
-实现位置和接口职责见 [Host 插件边界实现位置](../../docs/integrations.md)。
+实现位置和接口职责见 [Host 插件边界实现位置](../../docs/extensions/integration.md)。

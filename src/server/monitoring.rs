@@ -512,31 +512,44 @@ pub(super) async fn plugin_monitoring(
 pub(super) async fn plugin_ui_catalog(
     State(state): State<Arc<Console>>,
 ) -> Result<Json<Value>, ApiError> {
-    state.require("monitor.read")?;
     state.require("extension.read")?;
-    let snapshot = state
-        .monitoring
-        .as_ref()
-        .map(|monitoring| monitoring.snapshot())
-        .transpose()
-        .map_err(monitor_error)?;
-    let views = plugin_summaries(&state, snapshot.as_ref())
-        .into_iter()
-        .filter(|plugin| {
-            plugin["registration"] == "registered" && plugin["view_registration"] == "registered"
-        })
-        .map(|plugin| {
-            json!({
-                "plugin_id": plugin["id"],
-                "view_id": "monitoring",
-                "title": format!("{} 监控", plugin["id"].as_str().unwrap_or("插件")),
-                "renderer": "monitoring_v1",
-                "read_only": true,
-                "required_permissions": ["monitor.read", "extension.read"]
+    let views = if state.require("monitor.read").is_ok() {
+        plugin_summaries(&state, None)
+            .into_iter()
+            .filter(|plugin| {
+                plugin["registration"] == "registered"
+                    && plugin["view_registration"] == "registered"
             })
-        })
+            .map(|plugin| {
+                json!({
+                    "plugin_id": plugin["id"], "view_id": "monitoring",
+                    "title": format!("{} 监控", plugin["id"].as_str().unwrap_or("插件")),
+                    "renderer": "monitoring_v1", "read_only": true,
+                    "required_permissions": ["monitor.read", "extension.read"]
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let pages = state
+        .extensions
+        .as_ref()
+        .map(|registry| registry.ui_links_catalog())
+        .transpose()
+        .map_err(|_| ApiError::unavailable("page catalog unavailable"))?
+        .unwrap_or_default();
+    let external_links = pages
+        .iter()
+        .flat_map(|page| &page.links)
         .collect::<Vec<_>>();
-    Ok(Json(json!({"schema_version":1,"views":views})))
+    let link_statuses = pages.iter().map(|page| json!({
+        "plugin_id":page.plugin_id,"status":page.status,"descriptor_revision":page.descriptor_revision,
+        "error":page.error,"unavailable_pages":page.unavailable_pages
+    })).collect::<Vec<_>>();
+    Ok(Json(
+        json!({"schema_version":1,"views":views,"external_links":external_links,"link_statuses":link_statuses}),
+    ))
 }
 
 pub(super) async fn plugin_ui_view(

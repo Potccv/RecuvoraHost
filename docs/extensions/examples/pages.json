@@ -1,0 +1,123 @@
+{
+  "capability": "recuvora.ui_links.v1",
+  "schema_version": 1,
+  "ready": {
+    "type": "ready",
+    "protocol_version": 1,
+    "id": "workload-plugin",
+    "kind": "plugin",
+    "contracts": [{
+      "id": "com.example.workload.ui",
+      "version": 1,
+      "methods": [{
+        "name": "describe_ui_links",
+        "read_only": true,
+        "input_schema": {
+          "type": "object",
+          "properties": {"schema_version": {"type": "integer", "enum": [1]}},
+          "required": ["schema_version"],
+          "additionalProperties": false
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "schema_version": {"type": "integer", "enum": [1]},
+            "revision": {"type": "string", "maxLength": 128},
+            "pages": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {"type": "string", "maxLength": 128},
+                  "title": {"type": "string", "maxLength": 128},
+                  "description": {"type": "string", "maxLength": 1024},
+                  "entrypoint": {"type": "string", "maxLength": 128},
+                  "relative_url": {"type": "string", "maxLength": 2048},
+                  "open_mode": {"type": "string", "enum": ["external"]}
+                },
+                "required": ["id", "title", "entrypoint", "relative_url", "open_mode"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["schema_version", "revision", "pages"],
+          "additionalProperties": false
+        }
+      }]
+    }],
+    "capabilities": ["recuvora.ui_links.v1"],
+    "workspaces": []
+  },
+  "call": {
+    "type": "call",
+    "id": "ui-links-001",
+    "contract": "com.example.workload.ui",
+    "version": 1,
+    "method": "describe_ui_links",
+    "params": {"schema_version": 1},
+    "timeout_ms": 5000
+  },
+  "result": {
+    "type": "result",
+    "id": "ui-links-001",
+    "result": {
+      "schema_version": 1,
+      "revision": "r7",
+      "pages": [{
+        "id": "dashboard",
+        "title": "运行面板",
+        "description": "查看任务状态和运行记录",
+        "entrypoint": "web",
+        "relative_url": "dashboard",
+        "open_mode": "external"
+      }]
+    }
+  },
+  "deployment_config": {
+    "ui_links": {
+      "enabled": true,
+      "entrypoints": {"web": "https://plugins.example.com/workload/"}
+    }
+  },
+  "navigation_entry": {
+    "kind": "external_link",
+    "plugin_id": "workload-plugin",
+    "page_id": "dashboard",
+    "title": "运行面板",
+    "description": "查看任务状态和运行记录",
+    "url": "https://plugins.example.com/workload/dashboard",
+    "open_mode": "external",
+    "descriptor_revision": "r7"
+  },
+  "valid_responses": [
+    {"name": "empty_pages", "value": {"schema_version": 1, "revision": "r8", "pages": []}},
+    {"name": "base_page", "value": {"schema_version": 1, "revision": "r9", "pages": [{"id": "home", "title": "首页", "entrypoint": "web", "relative_url": "", "open_mode": "external"}]}}
+  ],
+  "invalid_responses": [
+    {"name": "unknown_field", "value": {"schema_version": 1, "revision": "r8", "pages": [], "token": "placeholder"}},
+    {"name": "unsupported_version", "value": {"schema_version": 2, "revision": "r8", "pages": []}},
+    {"name": "invalid_revision", "value": {"schema_version": 1, "revision": "", "pages": []}},
+    {"name": "null_pages", "value": {"schema_version": 1, "revision": "r8", "pages": null}},
+    {"name": "null_description", "value": {"schema_version": 1, "revision": "r8", "pages": [{"id": "home", "title": "首页", "description": null, "entrypoint": "web", "relative_url": "", "open_mode": "external"}]}},
+    {"name": "unsupported_mode", "value": {"schema_version": 1, "revision": "r8", "pages": [{"id": "home", "title": "首页", "entrypoint": "web", "relative_url": "", "open_mode": "iframe"}]}},
+    {"name": "duplicate_page", "value": {"schema_version": 1, "revision": "r8", "pages": [{"id": "home", "title": "首页", "entrypoint": "web", "relative_url": "", "open_mode": "external"}, {"id": "home", "title": "其他", "entrypoint": "web", "relative_url": "other", "open_mode": "external"}]}}
+  ],
+  "resolution_cases": [
+    {"relative_url": "", "expected_url": "https://plugins.example.com/workload/"},
+    {"relative_url": "dashboard", "expected_url": "https://plugins.example.com/workload/dashboard"},
+    {"relative_url": "logs?level=error", "expected_url": "https://plugins.example.com/workload/logs?level=error"},
+    {"relative_url": "#/dashboard", "expected_url": "https://plugins.example.com/workload/#/dashboard"},
+    {"relative_url": "/dashboard", "expected_error": "absolute_path"},
+    {"relative_url": "//other.example.com/dashboard", "expected_error": "network_path"},
+    {"relative_url": "https://other.example.com/dashboard", "expected_error": "absolute_url"},
+    {"relative_url": "javascript:alert(1)", "expected_error": "scheme"},
+    {"relative_url": "../dashboard", "expected_error": "dot_segment"},
+    {"relative_url": "%2e%2e/dashboard", "expected_error": "encoded_dot_segment"},
+    {"relative_url": "a%2fb", "expected_error": "encoded_separator"},
+    {"relative_url": "a%5cb", "expected_error": "encoded_separator"},
+    {"relative_url": "%252e%252e/dashboard", "expected_error": "nested_encoding"},
+    {"relative_url": "..\\dashboard", "expected_error": "backslash"},
+    {"relative_url": "bad%", "expected_error": "invalid_escape"}
+  ]
+}

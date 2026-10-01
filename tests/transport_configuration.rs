@@ -117,6 +117,7 @@ fn extension_templates_use_valid_network_endpoints() {
     for template in [
         include_str!("../profiles/extensions.example.json"),
         include_str!("../profiles/extensions.network.example.json"),
+        include_str!("../profiles/extensions.pages.example.json"),
     ] {
         let config: ExtensionsConfig = serde_json::from_str(template).unwrap();
         config.validate().unwrap();

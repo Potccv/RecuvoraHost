@@ -34,6 +34,6 @@ Core 依次处理排队（queued）、诊断（diagnosing）、等待审批（aw
 
 ## 接口与限制
 
-HTTP 路径、权限和 revision 见 [HTTP API](console-api.md)，审核规则见 [审批](approval.md)。当前没有独立的恢复流程 CLI 管理命令；`serve --config` 根据配置启动服务，Rust 应用也可直接使用 HostRuntime 和 Core 公共接口。
+HTTP 路径、权限和 revision 见 [HTTP API](api/http.md)，审核规则见 [审批](approval.md)。当前没有独立的恢复流程 CLI 管理命令；`serve --config` 根据配置启动服务，Rust 应用也可直接使用 HostRuntime 和 Core 公共接口。
 
 每个 HostRuntime 管理一个固定目标的恢复流程。它不接受任意脚本上传、任意 shell、自动节点安装或配置热更新。执行结果未知时，继续阻止同一目标上的冲突任务。协议测试替身的结果不能代替真实执行节点、进程监督或业务恢复验收。

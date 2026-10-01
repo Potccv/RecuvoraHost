@@ -15,6 +15,7 @@
 | Core恢复流程映射 | 原始任务/审批类型、`result_check` 与 `checked_at_ms`、审批与任务revision、可信actor、显式配置及容量、共享目标所有权、故障登记权威、暂停恢复与根据节点证据核实结果 |
 | 监控与故障 | 摘要/详情、确认revision、关联修复、无权限及陈旧状态 |
 | 插件与观测记录 | 只读描述、schema/限额、配置绑定、网络来源、游标与限制结果数量的查询 |
+| 插件独立页面 | `ui_links.rs` 检查可选能力、地址绑定、描述/revision 校验、目录权限、显式刷新、容量、回调拒绝及关闭；使用隔离协议替身，不执行网页或客户端 |
 | 外部静态文件 | 固定允许表、编码越界/未知路径、认证隔离、启动快照、缺失/超限及未配置 |
 
 源码保护用例同时覆盖 Host/Core 内的新模拟数据目录在创建前被拒绝、Host 源码修复目标被拒绝，以及服务启动拒绝 Core 源码路径。生产文件边界用例保持受保护目录拒绝，HTTP 不伪造批准或执行会话；故障关联用例只验证范围、revision、权限、失败回执和重启后的来源历史。
@@ -57,4 +58,4 @@ cargo test --locked --test ui_contract external_ui_assets_and_http_contract -- -
 
 恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
 
-完整检查结果见[实现状态](../docs/implementation-status.md#自动验证)。协议/网络测试通过不代替实际节点或业务恢复验收。
+完整检查结果见[实现状态](../docs/status.md#自动验证)。协议/网络测试通过不代替实际节点或业务恢复验收。

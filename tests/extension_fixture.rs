@@ -94,6 +94,7 @@ pub fn definition_with_environment(
         .map_err(|_| "fixture server lock poisoned")?
         .push(server);
     Ok(ExtensionDefinition {
+        ui_links: Default::default(),
         id: id.into(),
         kind,
         enabled: true,

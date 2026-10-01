@@ -8,4 +8,4 @@ Harness 列举通过 Host RegistryBuilder 与 RemoteHarnessFactory 检查配置�
 
 Harness 和监控复用 HostRuntime，修复会话、模拟引擎和 HTTP 回执由相应入口显式打开。自动恢复流程不因普通 Host 启动而自动派发。关闭先停止派发、请求取消并继续收集已保存的结果，再等待 Core 的当前任务结束并关闭服务；断线不证明远端执行者结束。
 
-用法见[CLI](../../docs/cli.md)与[HTTP](../../docs/console-api.md)，规则见 [AGENTS](AGENTS.md)。
+用法见[CLI](../../docs/cli.md)与[HTTP](../../docs/api/http.md)，规则见 [AGENTS](AGENTS.md)。

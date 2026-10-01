@@ -42,4 +42,4 @@
 - 实现后验证幂等请求、版本冲突、部分修改、授权撤销、子进程残留、断线重启和回退失败。
 - 当前受控文件动作通过隔离文件及故障状态测试；没有任意命令、真实桌面或长期运行验证，退出码为零也不等于业务恢复成功。
 
-开发约束见 [AGENTS.md](AGENTS.md)；授权与恢复语义见 [插件规范](../../docs/plugins.md) 和 [架构设计](../../docs/architecture.md)。
+开发约束见 [AGENTS.md](AGENTS.md)；授权与恢复语义见 [插件规范](../../docs/extensions/README.md) 和 [架构设计](../../docs/architecture.md)。

@@ -18,4 +18,4 @@ Host 保存 Core 校验后的完整 ProposedOperation、ApprovalRecord、审核�
 
 Windows 动作只允许替换白名单内已有 UTF-8 普通文件的全文：最多 64 个路径，每文件 16 KiB。写入中途失败可能留下部分内容，结果保持 Unknown。content_verified 表示文件内容核验，business_verified 表示业务验收；文件读回一致不能证明业务恢复。
 
-接口见 [HTTP API](console-api.md)、[CLI](cli.md) 和[恢复流程](recovery.md)。
+接口见 [HTTP API](api/http.md)、[CLI](cli.md) 和[恢复流程](recovery.md)。

@@ -1,5 +1,8 @@
 //! Bounded metadata/schema validation before extension registration.
-use super::{ExtensionDefinition, MONITORING_VIEW_CAPABILITY, MONITORING_VIEW_METHOD};
+use super::{
+    ExtensionDefinition, MONITORING_VIEW_CAPABILITY, MONITORING_VIEW_METHOD, UI_LINKS_CAPABILITY,
+    UI_LINKS_METHOD,
+};
 use super::{ExtensionError, ExtensionKind, ExtensionMetadata};
 use crate::protocol;
 use std::collections::BTreeSet;
@@ -57,6 +60,11 @@ pub(super) fn validate_metadata(
                     .iter()
                     .any(|capability| capability == MONITORING_VIEW_CAPABILITY)
                     && method.name == MONITORING_VIEW_METHOD)
+                && !(metadata
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == UI_LINKS_CAPABILITY)
+                    && method.name == UI_LINKS_METHOD)
             {
                 return Err(ExtensionError::Rejected(
                     "new plugin methods currently must be read-only".into(),

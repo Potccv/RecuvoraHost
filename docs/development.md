@@ -41,6 +41,6 @@ cargo test --locked --test protocol
 1. 先读 [源码导航](../src/README.md)和目标目录的 README/AGENTS，确认逻辑归属 Host、Core、节点或客户端。
 2. 修改所属模块及集中测试；涉及网络消息、业务字段、配置或 HTTP 时，同步更新对应专题文档、兼容向量或模板。
 3. 按 [文档规范](AGENTS.md)维护内容归属；根入口链接详细说明，不重复抄录接口和字段表。
-4. 运行适用检查，报告变更、实际结果和仍未验证的行为；新增能力或关闭问题时更新 [实现状态](implementation-status.md)。
+4. 运行适用检查，报告变更、实际结果和仍未验证的行为；新增能力或关闭问题时更新 [实现状态](status.md)。
 
-嵌入调用者负责认证、控制路径隔离与生命周期；直接使用库不经过 HTTP 权限检查，要求见 [Rust API](host-rust-api.md)。运行与部署配置见 [项目入口](../README.md)和 [配置说明](configuration.md)。
+嵌入调用者负责认证、控制路径隔离与生命周期；直接使用库不经过 HTTP 权限检查，要求见 [Rust API](api/rust.md)。运行与部署配置见 [项目入口](../README.md)和 [配置说明](configuration.md)。

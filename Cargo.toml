@@ -66,6 +66,10 @@ name = "ui_contract"
 path = "tests/ui_contract.rs"
 
 [[test]]
+name = "ui_links"
+path = "tests/ui_links.rs"
+
+[[test]]
 name = "protocol"
 path = "tests/protocol.rs"
 

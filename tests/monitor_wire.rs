@@ -125,6 +125,7 @@ fn definition(
     endpoint: &NetworkEndpoint,
 ) -> Result<ExtensionDefinition> {
     Ok(ExtensionDefinition {
+        ui_links: Default::default(),
         id: id.into(),
         kind,
         enabled: true,

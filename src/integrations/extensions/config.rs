@@ -1,5 +1,5 @@
 //! Trusted extension definitions, namespace ownership and call allowlists.
-use super::{ExtensionError, ExtensionKind, NetworkEndpoint};
+use super::{ExtensionError, ExtensionKind, NetworkEndpoint, UiLinksConfig};
 use crate::protocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -28,6 +28,8 @@ pub struct ExtensionDefinition {
     pub allow_calls: Vec<AllowedMethod>,
     #[serde(default)]
     pub allow_nodes: Vec<String>,
+    #[serde(default)]
+    pub ui_links: UiLinksConfig,
 }
 fn enabled() -> bool {
     true
@@ -89,6 +91,7 @@ impl ExtensionsConfig {
                 ));
             }
             definition.endpoint.validate()?;
+            definition.ui_links.validate(definition.kind)?;
             for namespace in &definition.namespaces {
                 if definition.kind != ExtensionKind::Plugin
                     || !protocol::valid_id(namespace)

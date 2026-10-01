@@ -12,6 +12,6 @@
 | [actions](actions/README.md)、[repair](repair/README.md)、[simulation](simulation/README.md) | 旧本机文本动作、人工工具流程和模拟测试 |
 | [cli](cli/README.md)、[server](server/README.md)、[presentation](presentation/README.md) | 操作入口、认证授权和事实视图 |
 
-程序入口为 [main.rs](main.rs)，库导出以 [lib.rs](lib.rs)为准；`cli` 与 `presentation` 为内部模块，其余模块提供公开服务。接口概览见 [Host Rust API](../docs/host-rust-api.md)。
+程序入口为 [main.rs](main.rs)，库导出以 [lib.rs](lib.rs)为准；`cli` 与 `presentation` 为内部模块，其余模块提供公开服务。接口概览见 [Host Rust API](../docs/api/rust.md)。
 
-Core 的最终状态只能通过 `recuvora_core` 公共接口访问。Host 的协议类型统一来自 `crate::protocol`；对外契约以 [扩展协议 v1](../docs/extension-protocol-v1.md)为准，不要求节点依赖 Rust 包。修改前阅读 [源码规范](AGENTS.md)和目标模块局部规则。
+Core 的最终状态只能通过 `recuvora_core` 公共接口访问。Host 的协议类型统一来自 `crate::protocol`；对外契约以 [扩展协议 v1](../docs/extensions/protocol.md)为准，不要求节点依赖 Rust 包。修改前阅读 [源码规范](AGENTS.md)和目标模块局部规则。

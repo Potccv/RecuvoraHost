@@ -34,6 +34,10 @@ pub(super) fn router(console: Arc<Console>) -> Router {
         )
         .route("/api/v1/ui/catalog", get(monitoring::plugin_ui_catalog))
         .route(
+            "/api/v1/ui/plugins/{id}/links/refresh",
+            post(plugin_pages::refresh),
+        )
+        .route(
             "/api/v1/ui/plugins/{plugin_id}/views/{view_id}",
             get(monitoring::plugin_ui_view),
         )

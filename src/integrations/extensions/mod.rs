@@ -6,10 +6,12 @@ mod config;
 mod endpoint;
 mod network;
 mod node_settings;
+mod page_urls;
 mod protocol_settings;
 mod registry;
 mod routing;
 mod transport;
+mod ui_links;
 mod ui_view;
 mod validation;
 
@@ -24,4 +26,7 @@ pub use endpoint::NetworkEndpoint;
 pub use node_settings::NodeSettings;
 pub use protocol_settings::ProtocolSettings;
 pub use registry::{ExtensionRegistry, ExtensionStatus};
+pub use ui_links::{
+    UI_LINKS_CAPABILITY, UI_LINKS_METHOD, UiLink, UiLinksConfig, UiLinksSnapshot, UnboundPage,
+};
 pub use ui_view::{MONITORING_VIEW_CAPABILITY, MONITORING_VIEW_METHOD, MonitoringViewRegistration};

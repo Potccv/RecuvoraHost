@@ -1,6 +1,6 @@
 # 节点业务接口 v1
 
-本文件补充[扩展协议 v1](extension-protocol-v1.md)的业务载荷。下列对象放入 `call.params` 和 `result.result`，不另建消息类型。节点按 JSON 字段独立实现，不需要 Rust 或 Host/Core 依赖。方法须在 Ready 中声明输入/输出 schema，并由可信 Host 配置加入白名单；仅声明方法不会授予权限。
+本文件补充[扩展协议 v1](protocol.md)的业务载荷。下列对象放入 `call.params` 和 `result.result`，不另建消息类型。节点按 JSON 字段独立实现，不需要 Rust 或 Host/Core 依赖。方法须在 Ready 中声明输入/输出 schema，并由可信 Host 配置加入白名单；仅声明方法不会授予权限。
 
 ## Harness：`recuvora.harness`，version 1
 
@@ -45,7 +45,7 @@ Ready 的能力标识按功能声明：文本调用需要 `text`，Client 会话
 
 Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输入和输出 schema；输入不符在派发前拒绝，结果不符不得作为成功项目或会话返回。`create_project` 和 `run` 已派发后的无效输出保持 Unknown；`projects` 的只读无效输出作为契约校验错误返回。节点可声明比上述通用上限更严格的必填字段、数组项数或字符串长度，Host 同时执行这些限额。
 
-工具处理器的拒绝、派发前取消和 Unknown 按[协议结果分类](extension-protocol-v1.md#标识版本与结果含义)返回；有副作用回调的 Unknown 不能被本次会话的普通顶层结果消除，回调输出超限也保持 Unknown。
+工具处理器的拒绝、派发前取消和 Unknown 按[协议结果分类](protocol.md#标识版本与结果含义)返回；有副作用回调的 Unknown 不能被本次会话的普通顶层结果消除，回调输出超限也保持 Unknown。
 
 ## 恢复执行器：`recuvora.repair`，version 1
 
@@ -115,6 +115,6 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
 }
 ```
 
-cursor 回显请求游标，初次为 null；generation 表示来源代次，sequence 在代次内单调递增。coverage 只接受 `complete/partial`；空完整批次不代表目标健康，部分覆盖、失联与过期均不能推出恢复。Host 按配置规则读取 value，并独立验证身份、顺序、时效与覆盖。详细配置见[监控说明](monitoring.md)和[监控模块](../src/monitoring/README.md)。
+cursor 回显请求游标，初次为 null；generation 表示来源代次，sequence 在代次内单调递增。coverage 只接受 `complete/partial`；空完整批次不代表目标健康，部分覆盖、失联与过期均不能推出恢复。Host 按配置规则读取 value，并独立验证身份、顺序、时效与覆盖。详细配置见[监控说明](../monitoring.md)和[监控模块](../../src/monitoring/README.md)。
 
 获准插件可发送 `method: "service.call"` 的 callback，params 为 `node_id`、`contract`、`version`、`method`、`params`。Host 只访问插件 `allow_nodes` 中的节点及明确获准的只读方法；回复使用相同 callback ID。该入口不能调用修复执行方法，也不能隐式授权其他业务。

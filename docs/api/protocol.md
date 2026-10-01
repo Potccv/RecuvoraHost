@@ -1,6 +1,6 @@
 # Host 协议模块 Rust 接口
 
-本文件描述当前 Host `protocol` 模块的导出，仅供宿主实现与测试参考；外部节点按 JSON 规范自行实现。协议主版本为 v1；消息的 JSON 约定见 [外部扩展协议](extension-protocol-v1.md)，源码入口见 [mod.rs](../src/protocol/mod.rs)。本模块提供线协议表示和显式校验函数，不提供传输、扩展注册、调用监督或业务授权。
+本文件描述当前 Host `protocol` 模块的导出，仅供宿主实现与测试参考；外部节点按 JSON 规范自行实现。协议主版本为 v1；消息的 JSON 约定见 [外部扩展协议](../extensions/protocol.md)，源码入口见 [mod.rs](../../src/protocol/mod.rs)。本模块提供线协议表示和显式校验函数，不提供传输、扩展注册、调用监督或业务授权。
 
 ## 导入与公开边界
 
@@ -21,7 +21,7 @@ use recuvora_host::protocol::{
 | `PROTOCOL_VERSION` | `u32` | `1` | 消费者在握手时精确核对协议版本；反序列化不自动比较该常量。 |
 | `MAX_FRAME_BYTES` | `usize` | `1024 * 1024`，即 1 MiB | 传输实现限制单个 JSON 消息的 UTF-8 字节数，在发送及接收边界检查；`Message` 本身不检查帧大小。 |
 
-当前公开 API 没有单独的 ID、schema、JSON 值或会话限额常量。ID 与 schema/value 校验中的固定限制见下文；协议对契约数量、方法数量、调用期限、消息数和回调数的要求见 [外部扩展协议](extension-protocol-v1.md)，由消费方执行，本模块尚未为这些要求提供公共限额或会话校验 API。
+当前公开 API 没有单独的 ID、schema、JSON 值或会话限额常量。ID 与 schema/value 校验中的固定限制见下文；协议对契约数量、方法数量、调用期限、消息数和回调数的要求见 [外部扩展协议](../extensions/protocol.md)，由消费方执行，本模块尚未为这些要求提供公共限额或会话校验 API。
 
 ## 身份与声明类型
 
@@ -184,7 +184,7 @@ schema 必须是 JSON 对象并具有一个字符串 `type`。支持 `object`、
 
 ## 使用示例
 
-以下示例展示 Host 内如何显式校验载荷并构造/解析消息，不建立网络会话。它不是外部节点接入方式；节点应按 JSON 规范独立实现。宿主工具链要求见 [Cargo.toml](../Cargo.toml) 与 [rust-toolchain.toml](../rust-toolchain.toml)。
+以下示例展示 Host 内如何显式校验载荷并构造/解析消息，不建立网络会话。它不是外部节点接入方式；节点应按 JSON 规范独立实现。宿主工具链要求见 [Cargo.toml](../../Cargo.toml) 与 [rust-toolchain.toml](../../rust-toolchain.toml)。
 
 ```rust
 use recuvora_host::protocol::{
@@ -242,4 +242,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-用于真实消费前，还应按 [外部扩展协议](extension-protocol-v1.md) 核验握手身份/版本、契约登记与兼容、可信调用白名单、期限/容量、响应关联和输出 schema；这些条件不是上述序列化或校验函数的自动效果。
+用于真实消费前，还应按 [外部扩展协议](../extensions/protocol.md) 核验握手身份/版本、契约登记与兼容、可信调用白名单、期限/容量、响应关联和输出 schema；这些条件不是上述序列化或校验函数的自动效果。

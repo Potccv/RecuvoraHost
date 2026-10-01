@@ -30,4 +30,4 @@ Harness 审核必须先经 `begin_harness_review` 持久提交审核尝试，再
 4. 在原目录内创建独立 `.core02-*` 代次，可靠保存全部新日志、导入证明与原恢复日志备份 `legacy-recovery.jsonl`。最后原子替换根 `recovery.jsonl` 为入口标记。发布前失败保留原有效日志；发布后的入口只引用已完成代次，旧版本拒绝解释该标记。
 5. 新 `RecoveryService` 继续使用原恢复根目录和同一所有权目录，不改 `recovery.lock` 身份；监控显式使用返回的 `LegacyRecoveryBundleReport.monitoring_directory`。维护 API 不自动改写启用配置。启动后按正常流程人工恢复暂停任务、独立核实 Unknown、重试有序知识交付。
 
-导入不生成新任务来替代原身份，不重放外部动作，不以缺失派发记录推断未执行。旧 Publishing 按已有证据归类为 Completed、Failed 或 Unknown 并保留有序知识交付；复用脚本失败后即使尚有诊断预算，也不在导入时自动续诊断。损坏、缺域、审批或故障关联冲突、证据不足以及不支持的压缩历史会阻止切换。测试和适用范围见 [HOST-003](../../docs/implementation-status.md#host-003)。
+导入不生成新任务来替代原身份，不重放外部动作，不以缺失派发记录推断未执行。旧 Publishing 按已有证据归类为 Completed、Failed 或 Unknown 并保留有序知识交付；复用脚本失败后即使尚有诊断预算，也不在导入时自动续诊断。损坏、缺域、审批或故障关联冲突、证据不足以及不支持的压缩历史会阻止切换。测试和适用范围见 [HOST-003](../../docs/status.md#host-003)。

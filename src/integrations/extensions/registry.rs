@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 pub(super) struct Entry {
+    pub(super) ui_links: super::ui_links::UiLinksRuntime,
     pub(super) definition: ExtensionDefinition,
     pub(super) client: ExtensionClient,
     pub(super) metadata: ExtensionMetadata,
@@ -31,7 +32,7 @@ pub struct ExtensionStatus {
 #[derive(Clone)]
 pub struct ExtensionRegistry {
     entries: BTreeMap<String, Arc<Entry>>,
-    definitions: Vec<ExtensionDefinition>,
+    pub(super) definitions: Vec<ExtensionDefinition>,
     statuses: Vec<ExtensionStatus>,
     contract_owners: BTreeMap<(String, u32), String>,
     pub(super) settings: NodeSettings,
@@ -160,6 +161,7 @@ impl ExtensionRegistry {
             entries.insert(
                 definition.id.clone(),
                 Arc::new(Entry {
+                    ui_links: super::ui_links::UiLinksRuntime::new(&definition.id),
                     definition,
                     client,
                     metadata,
@@ -179,14 +181,16 @@ impl ExtensionRegistry {
                 });
             }
         }
-        Ok(Self {
+        let registry = Self {
             entries,
             definitions: original_definitions,
             statuses,
             contract_owners,
             settings,
             calls: CallScope::default(),
-        })
+        };
+        registry.initialize_ui_links().await;
+        Ok(registry)
     }
     pub fn definitions(&self) -> Vec<ExtensionDefinition> {
         self.definitions.clone()
@@ -208,6 +212,7 @@ impl ExtensionRegistry {
     }
 
     pub async fn shutdown(&self) -> Result<(), ExtensionError> {
+        self.begin_shutdown()?;
         self.calls
             .shutdown()
             .await
@@ -215,9 +220,14 @@ impl ExtensionRegistry {
     }
 
     pub fn begin_shutdown(&self) -> Result<(), ExtensionError> {
-        self.calls
+        let result = self
+            .calls
             .close()
-            .map_err(|error| ExtensionError::Unavailable(error.to_string()))
+            .map_err(|error| ExtensionError::Unavailable(error.to_string()));
+        for entry in self.entries.values() {
+            entry.ui_links.close()?;
+        }
+        result
     }
 
     pub(super) fn entry(&self, id: &str) -> Result<&Entry, ExtensionError> {

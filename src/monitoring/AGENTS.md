@@ -1,6 +1,6 @@
 # 监控模块开发规范
 
-继承 [源码模块规范](../AGENTS.md)。职责与状态见 [README.md](README.md)，接口遵循 [插件规范](../../docs/plugins.md)。
+继承 [源码模块规范](../AGENTS.md)。职责与状态见 [README.md](README.md)，接口遵循 [插件规范](../../docs/extensions/README.md)。
 
 ## 本域约束
 

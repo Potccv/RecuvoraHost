@@ -4,7 +4,7 @@
 
 ## 服务配置与文件
 
-ServerConfig使用schema_version 1，listen必须回环，operator绑定可信审计身份，permissions仅接受[HTTP说明](console-api.md)列出的已实现权限。token_file、data_dir及非空的harness_config、extensions_config、repair_config、monitors_config、recovery_config、ui_dir使用源码外绝对路径；模板占位符需替换。服务状态目录和所需配置/令牌应在启动前存在。
+ServerConfig使用schema_version 1，listen必须回环，operator绑定可信审计身份，permissions仅接受[HTTP说明](api/http.md)列出的已实现权限。token_file、data_dir及非空的harness_config、extensions_config、repair_config、monitors_config、recovery_config、ui_dir使用源码外绝对路径；模板占位符需替换。服务状态目录和所需配置/令牌应在启动前存在。
 
 令牌文件保存32至256个可打印非空格ASCII字节，可带末尾换行；限制文件权限，不把秘密提交到源码、UI资产或命令参数。扩展 endpoint 令牌另由 bearer_token_env 引用环境变量，不与HTTP操作员令牌混用。
 
@@ -21,6 +21,8 @@ kind为node或plugin，id绑定握手身份，allow_calls列出准确接口约�
 这是与旧command配置不兼容的接入方式。旧stdio或SSH stdio节点不会被自动转换，command字段会被拒绝；须先由独立项目运行兼容网络节点，再显式填写endpoint。Host不提供节点网络服务端，不启动程序或监督节点后代。释放连接不证明远端执行者停止，已派发的不确定副作用仍为Unknown。
 
 ## 外部UI
+
+插件自有页面独立于 ui_dir：在扩展定义中配置 `ui_links.enabled: true` 及 `ui_links.entrypoints` 基础地址映射，允许 Host 发现并生成外部导航；默认关闭。绑定最多 16 项，只能为 plugin 配置非空绑定或启用，基础 URL 的严格规则见[插件独立页面](extensions/pages.md#可信部署地址绑定)。同时须声明页面能力并将描述方法列入 allow_calls，模板见[页面扩展](../profiles/extensions.pages.example.json)。Host 不从协议 endpoint 推导浏览器地址，不代理插件网页；修改部署绑定或启用状态后重启生效。
 
 ui_dir为null时只提供API，页面路由返回404。设置后目录必须包含固定14份官方静态文件：index.html、styles.css、data.js、shell.js、app.js、api.js、dom.js、history.js、monitoring.js、plugin-monitoring.js、project-logs.js、refresh.js、favicon.svg和favicon.ico。
 

@@ -8,7 +8,7 @@
 cargo run --locked -- serve --config $env:RECUVORA_SERVER_CONFIG
 ```
 
-ServerConfig的schema_version为1，listen只接受回环地址。token_file、data_dir及非空能力配置/UI路径必须是源码外绝对路径；状态目录、令牌及所需文件在启动前准备。最小占位模板见[server profile](../profiles/server.example.json)，字段解释见[配置说明](configuration.md)。服务配置本身也放源码外。
+ServerConfig的schema_version为1，listen只接受回环地址。token_file、data_dir及非空能力配置/UI路径必须是源码外绝对路径；状态目录、令牌及所需文件在启动前准备。最小占位模板见[server profile](../../profiles/server.example.json)，字段解释见[配置说明](../configuration.md)。服务配置本身也放源码外。
 
 令牌为独立随机生成的32至256字节可打印非空格ASCII秘密，文件可带末尾换行。请求使用`Authorization: Bearer ...`，operator从服务配置绑定，不能由请求正文指定。当前为单操作员模式，没有多用户账户或OAuth。令牌文件不进入源码、UI构建或日志。
 
@@ -42,8 +42,9 @@ ui_dir为空时页面路由返回404。配置后启动加载固定14份官方静
 | `POST /extensions/{id}/query` | contract、version、method、params，调用获准的只读接口 |
 | `GET /monitors`、`/monitors/{id}` | 监控与发现摘要、详情；要求monitor.read |
 | `GET /monitoring/plugins/{id}` | 宿主通用监控和受限插件描述；专属读取额外要求extension.read |
-| `GET /ui/catalog` | 经权限过滤的声明式插件 view 目录 |
+| `GET /ui/catalog` | 要求 extension.read；返回 views、external_links、link_statuses，views 额外按 monitor.read 过滤 |
 | `GET /ui/plugins/{plugin_id}/views/{view_id}` | Host 校验并包装的只读 view 文档；当前实现 `monitoring_v1` |
+| `POST /ui/plugins/{plugin_id}/links/refresh` | `{}`；要求 extension.read；显式刷新插件页面描述，返回快照及 auto_retry:false |
 | `GET /monitors/{id}/logs` | 配置绑定的观测记录流；要求monitor.read、logs.read和extension.read |
 | `GET /incidents`、`/incidents/{id}` | 故障摘要与完整证据；要求incident.read |
 | `POST /incidents/{id}/acknowledge` | revision、note；要求incident.read与incident.acknowledge |
@@ -66,7 +67,7 @@ decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revi
 
 修复经验搜索是只读 POST，不创建 operation。conditions 为 1–32 项准确条件，keywords 最多 32 项，limit 为 1–100；匹配规则由 Core KnowledgeQuery 决定。结果仅包含适用、已验证且脚本版本未被隔离的 KnowledgeRecord，保留候选、状态、脚本及案例，不能据此取得执行权限。核实未知执行结果不会自动解除脚本版本隔离。
 
-恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 保留旧文本修复兼容视图，不混入新恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](recovery.md)。
+恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 保留旧文本修复兼容视图，不混入新恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
 
 ## 接受、结果与重复请求
 
@@ -90,8 +91,12 @@ HTTP应用日志与Core审批/故障记录分别承担传输接收和业务判�
 
 插件监控通过通用 UI catalog/view GET 接口读取；旧 monitoring 路径保留兼容。专属描述须登记并满足权限、schema和限额，失败以独立状态降级，不加载插件HTML、脚本或资源。插件描述不能覆盖Core健康、授权或恢复事实。
 
+独立页面与声明式 view 并列提供。目录保持 schema_version 1 和 views，新增 external_links 扁平入口数组及 link_statuses 插件状态数组；缺少 monitor.read 时只过滤 views，不阻止获准的外部页面读取。目录使用登记实例内快照，不触发插件调用。页面字段、URL 绑定和状态详见[独立页面契约](../extensions/pages.md#host-向-ui-提供的导航对象)。
+
+页面刷新只读取固定 describe_ui_links 描述，不创建执行 operation、审批或恢复事实。返回 `{schema_version:1,plugin:快照,auto_retry:false}`，快照带 links；200 中的 unavailable/invalid_response 仍表示描述失败且链接已撤下。忙为409，无法派发为503，未知插件为404；客户端根据响应状态显示诊断，不自动重试。插件网页由插件自行提供和鉴权，Host 不代理页面或传递操作员令牌。
+
 log_sources由可信配置限定提供方、方法、monitor_contract、固定参数/参数绑定、游标和字段映射。请求只选择已登记monitor，不允许浏览器选择任意方法或参数。普通记录和错误记录按服务配置的error_levels/error_events分类，不从文本猜测业务含义。
 
 目标记录流每页1至32条，游标由服务关联目标、来源与连续性；失效或来源变化要求明确重读，不静默跳过。此接口不会推进监控引擎保存的读取位置，也不是原始日志上传入口。所有查询都限制返回数量与数据大小，错误不伪装成空数据。
 
-接口约定检查范围见[测试说明](../tests/README.md)。真实节点、跨机网络、浏览器/Tauri交互及业务恢复仍需部署验收。
+接口约定检查范围见[测试说明](../../tests/README.md)。真实节点、跨机网络、浏览器/Tauri交互及业务恢复仍需部署验收。

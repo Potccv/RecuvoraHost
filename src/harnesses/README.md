@@ -85,7 +85,7 @@
 
 `HarnessRunRequest::remote(node_id, workspace_id, prompt)`、`HarnessProjectListRequest::remote` 和 `HarnessProjectCreateRequest::remote` 显式选择节点资源。返回会话的 `project_directory` 是 `node://ID/workspace` 资源引用；项目 roots 是节点路径元数据，不能交给宿主文件 API 使用。
 
-执行与审批使用同一 registry 的独立容量，审批始终创建新的无工具隐藏会话。双向工具回调只能进入该请求显式提供的可信 handler。超时、连接丢失和未确认取消保留原调用关联及 `Unknown`。消息、容量、传输限制与节点义务见[扩展协议](../../docs/extension-protocol.md)。
+执行与审批使用同一 registry 的独立容量，审批始终创建新的无工具隐藏会话。双向工具回调只能进入该请求显式提供的可信 handler。超时、连接丢失和未确认取消保留原调用关联及 `Unknown`。消息、容量、传输限制与节点义务见[扩展协议](../../docs/extensions/connection.md)。
 
 嵌入应用通过扩展配置和请求中的 workspace_id 选择远端资源；扩展配置必须提供网络 `endpoint`，不接受旧 command 或 stdio 接入。Harness 的 `address` 仍为 `node://扩展ID`，网络 URL 写在对应扩展的 endpoint 中，同机节点通过回环地址连接。本项目不下载、打包、构建或启动节点。自动回归使用受控网络协议夹具；具体供应商协议、服务端和提供方集成验证由相应节点项目维护。
 
@@ -106,4 +106,4 @@
 - AI 文本调用、审批规则、获准动作与记录存储由不同模块初始化；模拟任务始终保持模拟测试行为。
 - 网络能力是通用节点协议客户端，不是供应商原生 HTTP/WebSocket API 适配器；插件市场、在线升级或 SDK 分发尚未实现，跨机与长期运行需按节点和部署环境分别验收。
 
-开发约束见 [AGENTS.md](AGENTS.md)；接入与授权边界见[插件规范](../../docs/plugins.md)和[架构设计](../../docs/architecture.md)。
+开发约束见 [AGENTS.md](AGENTS.md)；接入与授权边界见[插件规范](../../docs/extensions/README.md)和[架构设计](../../docs/architecture.md)。

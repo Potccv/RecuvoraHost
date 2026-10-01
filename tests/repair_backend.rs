@@ -210,6 +210,7 @@ async fn backend(
         ExtensionRegistry::connect(ExtensionsConfig {
             schema_version: 1,
             extensions: vec![ExtensionDefinition {
+                ui_links: Default::default(),
                 id: "fixture-node".into(),
                 kind: ExtensionKind::Node,
                 enabled: true,
@@ -565,6 +566,7 @@ async fn managed_http(mode: &str) -> TestResult {
             schema_version: 1,
             extensions: vec![
                 ExtensionDefinition {
+                    ui_links: Default::default(),
                     id: "observation-plugin".into(),
                     kind: ExtensionKind::Plugin,
                     enabled: true,
@@ -578,6 +580,7 @@ async fn managed_http(mode: &str) -> TestResult {
                     allow_nodes: vec![],
                 },
                 ExtensionDefinition {
+                    ui_links: Default::default(),
                     id: "fixture-node".into(),
                     kind: ExtensionKind::Node,
                     enabled: true,

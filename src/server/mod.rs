@@ -4,6 +4,7 @@ mod history;
 mod http;
 mod journal;
 mod monitoring;
+mod plugin_pages;
 mod project_logs;
 mod recovery;
 mod static_files;
@@ -653,7 +654,7 @@ pub async fn run_cli(args: impl IntoIterator<Item = OsString>) -> Result<(), Api
     let args: Vec<_> = args.into_iter().collect();
     if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h" | "help")) {
         println!(
-            "Usage: recuvora-host serve --config <external-console-config.json>\nSet ui_dir to serve an externally built official UI.\nThe listener must be loopback; use TLS proxy or SSH forwarding for remote access.\nSee docs/console-api.md for token, permission, storage and node configuration."
+            "Usage: recuvora-host serve --config <external-console-config.json>\nSet ui_dir to serve an externally built official UI.\nThe listener must be loopback; use TLS proxy or SSH forwarding for remote access.\nSee docs/api/http.md for token, permission, storage and node configuration."
         );
         return Ok(());
     }

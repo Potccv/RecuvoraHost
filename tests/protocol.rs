@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 #[test]
 fn documented_wire_vectors_remain_compatible() {
     let vectors: Value =
-        serde_json::from_str(include_str!("../docs/protocol-v1-vectors.json")).unwrap();
+        serde_json::from_str(include_str!("../docs/extensions/examples/protocol.json")).unwrap();
     for value in vectors["valid"].as_array().unwrap() {
         let message: Message = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(message).unwrap(), *value);

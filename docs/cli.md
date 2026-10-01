@@ -50,4 +50,4 @@ cargo run --locked -- inspect --data-dir $env:RECUVORA_DATA_DIR --task $env:RECU
 
 data-dir 指定源码外的记录保存目录，task ID 使用 demo 实际输出。demo 运行固定模拟场景，覆盖成功、失败、验证失败、未知、超时、拒绝和取消等状态；不操作真实目标，也不调用 Harness 或网络节点。记录保留供 inspect 读取，不自动删除；模拟授权不能用于真实动作。
 
-HTTP启动用法另见[HTTP说明](console-api.md)。`recuvora-host serve --config PATH` 在服务配置明确指定 `recovery_config` 时初始化 Core 自动恢复流程；任务查询、人工决定、恢复与核实未知执行结果使用 HTTP 管理接口，当前没有独立的 recovery CLI 管理子命令。见[恢复流程指南](recovery.md)。所有入口均保留关闭错误和未知结果，不把退出码0泛化为业务恢复。
+HTTP启动用法另见[HTTP说明](api/http.md)。`recuvora-host serve --config PATH` 在服务配置明确指定 `recovery_config` 时初始化 Core 自动恢复流程；任务查询、人工决定、恢复与核实未知执行结果使用 HTTP 管理接口，当前没有独立的 recovery CLI 管理子命令。见[恢复流程指南](recovery.md)。所有入口均保留关闭错误和未知结果，不把退出码0泛化为业务恢复。

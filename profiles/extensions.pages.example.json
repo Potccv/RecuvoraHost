@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "extensions": [
+    {
+      "id": "workload-plugin",
+      "kind": "plugin",
+      "enabled": true,
+      "endpoint": {
+        "url": "https://plugins.example.com/recuvora",
+        "bearer_token_env": "RECUVORA_PLUGIN_TOKEN"
+      },
+      "namespaces": ["com.example.workload"],
+      "allow_calls": [
+        {"contract": "com.example.workload.ui", "version": 1, "method": "describe_ui_links"}
+      ],
+      "allow_nodes": [],
+      "ui_links": {
+        "enabled": true,
+        "entrypoints": {
+          "web": "https://plugins.example.com/workload/"
+        }
+      }
+    }
+  ]
+}
