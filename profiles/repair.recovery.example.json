@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "data_dir": "runtime/recovery",
   "ownership_dir": "runtime/target-ownership",
   "approval_store": {
@@ -8,28 +8,22 @@
   },
   "knowledge_store": {
     "max_records": 1024,
-    "max_cases_per_record": 128,
     "max_journal_bytes": 67108864
   },
   "recovery": {
-    "schema_version": 1,
+    "schema_version": 2,
     "execution_harness": "harness-external",
     "target": {
       "target_id": "target",
       "executor_id": "target-node",
-      "platform": "windows",
-      "allowed_languages": [
-        "powershell"
-      ],
-      "diagnostic_queries": [
-        "snapshot",
-        "recent-observations"
-      ],
       "verification_profile": "workload-health-v1",
       "required_facts": {
         "workload_version": "1"
       },
-      "action_timeout_secs": 60
+      "action_timeout_secs": 60,
+      "allowed_action_kinds": [
+        "execute_script"
+      ]
     },
     "approval": {
       "id": "repair-policy",
@@ -49,28 +43,10 @@
       ],
       "ttl_secs": 1800
     },
-    "script_approval": {
-      "id": "script-reuse-policy",
-      "version": 1,
-      "reviewer": {
-        "mode": "harness",
-        "harness_id": "harness-external"
-      },
-      "delegation": "Independently review the complete stored script and current target conditions before each reuse.",
-      "allowed_targets": [
-        "target"
-      ],
-      "allowed_action_kinds": [
-        "execute_script"
-      ],
-      "ttl_secs": 300
-    },
-    "diagnosis_timeout_secs": 120,
     "review_timeout_secs": 120,
     "max_tool_calls": 16,
-    "max_diagnoses": 3,
-    "minimum_script_occurrences": 2,
-    "max_tasks": 1024
+    "max_tasks": 1024,
+    "summary_timeout_secs": 120
   },
   "triggers": [
     {
@@ -85,5 +61,15 @@
       }
     }
   ],
-  "interval_ms": 1000
+  "interval_ms": 1000,
+  "executor": {
+    "platform": "windows",
+    "allowed_languages": [
+      "powershell"
+    ],
+    "diagnostic_queries": [
+      "snapshot",
+      "recent-observations"
+    ]
+  }
 }

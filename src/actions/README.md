@@ -2,7 +2,7 @@
 
 本目录维护受控目标操作与验证边界。本机文本执行与远端脚本代理分别实现，具体服务管理、发布、回退和业务验证由获准节点能力提供。
 
-远端脚本派发位于 [NodeRepairBackend](../integrations/recovery/node_backend.rs)，仅使用 Core AuthorizedScript。本目录只维护旧本机文本动作；Host 不启动解释器，节点负责目标作用域、执行监督和业务验收。接口见[修复流程](../../docs/recovery.md)。
+远端脚本派发位于 [NodeRepairBackend](../integrations/recovery/node_backend.rs)，仅使用 Host AuthorizedRepair。本目录只维护独立本机文本动作；Host 不启动解释器，节点负责目标作用域、执行监督和业务验收。接口见[修复流程](../../docs/recovery.md)。
 
 **当前已实现 [Windows 文本动作](files.rs)：读取显式白名单文件，以及匹配完整原文后的全文替换。** Host RepairSession 在 Host 可靠保存 Core 审批许可消费提案后调用 crate 内部写入入口；最多 64 个准确相对文件名，每个既有 UTF-8 文件最多 16 KiB。该本机入口未开放 shell、创建/删除、发布或桌面动作，其文件读回也不提供业务健康结论。
 

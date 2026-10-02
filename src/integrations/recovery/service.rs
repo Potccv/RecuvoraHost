@@ -10,7 +10,7 @@ use recuvora_core::recovery::{
     approval::{
         self, ApprovalDecision, ApprovalRecord, ApprovalState, ExecutionOutcome, ReviewStage,
     },
-    knowledge::{KnowledgeQuery, KnowledgeRecord, TrustedBusinessVerification},
+    knowledge::KnowledgeQuery,
     workflow::{
         IncidentEvidence, RecoveryCommand, RecoveryEffect, RecoveryEntry, RecoveryEvent,
         RecoveryState, TargetAuthority,
@@ -272,12 +272,9 @@ impl State {
             .operation
             .clone()
             .ok_or_else(|| service("missing original operation"))?;
-        let policy = if task.reused_script {
-            &config.script_approval
-        } else {
-            &config.approval
-        };
-        let record = self.approvals.request(op, policy.clone(), now / 1000)?;
+        let record = self
+            .approvals
+            .request(op, config.approval.clone(), now / 1000)?;
         #[cfg(test)]
         crash_boundary("approval_requested");
         self.event(
@@ -294,43 +291,12 @@ impl State {
         for job in self.workflow.pending_experiences() {
             if job.report.is_some() {
                 self.knowledge
-                    .record_experience(job.record(&self.workflow.config().target.platform)?)
+                    .record_experience(job.record()?)
                     .map_err(service)?;
+                #[cfg(test)]
+                crash_boundary("knowledge_committed");
                 self.event(RecoveryEvent::ExperienceDelivered { job_id: job.id }, now)?;
             }
-        }
-        // The reducer orders by created_revision, including accumulated failures.
-        for delivery in self.workflow.pending_deliveries() {
-            let candidate_id = delivery.candidate.id.clone();
-            self.knowledge
-                .upsert_candidate(delivery.candidate)
-                .map_err(service)?;
-            let proof = delivery
-                .verification
-                .map(|v| {
-                    TrustedBusinessVerification::attest(
-                        v.operation_id,
-                        v.target_id,
-                        v.script_id,
-                        v.script_version,
-                        v.verifier_id,
-                        v.evidence_refs,
-                        v.verified_at_ms,
-                    )
-                })
-                .transpose()
-                .map_err(service)?;
-            self.knowledge
-                .record_outcome(&candidate_id, delivery.case, proof)
-                .map_err(service)?;
-            #[cfg(test)]
-            crash_boundary("knowledge_committed");
-            self.event(
-                RecoveryEvent::DeliveryConfirmed {
-                    delivery_id: delivery.id,
-                },
-                now,
-            )?;
         }
         Ok(())
     }
@@ -408,11 +374,15 @@ impl RecoveryService {
         let mut root_lock = storage_layout::RootStorageLock::acquire(root)?;
         let directory = root_lock.resolve(root)?;
         let dir = directory.as_path();
-        // Keep the legacy filename: its old format must be rejected, never bypassed.
+        // Host execution restrictions remain bound even though Core is provider neutral.
+        let storage_config = serde_json::json!({
+            "recovery": config,
+            "backend": backend.persistence_binding(),
+        });
         let journal = Journal::open(
             dir.join("recovery.jsonl"),
             "recovery",
-            serde_json::to_value(&config)?,
+            storage_config.clone(),
             256 * 1024 * 1024,
         )
         .map_err(service)?;
@@ -444,7 +414,7 @@ impl RecoveryService {
         let dispatch = Journal::open(
             dir.join("dispatch.jsonl"),
             "dispatch",
-            serde_json::to_value(&config)?,
+            storage_config,
             64 * 1024 * 1024,
         )
         .map_err(service)?;
@@ -618,9 +588,6 @@ impl RecoveryService {
                 .map_err(service)
         })
     }
-    pub fn knowledge(&self, query: &KnowledgeQuery) -> Result<Vec<KnowledgeRecord>, RecoveryError> {
-        self.read_state(|s| s.knowledge.search(query).map_err(service))
-    }
     /// Retry committed experience delivery even when every business task ended.
     /// This never reconstructs execution effects or changes operation identity.
     pub fn deliver_pending(&self) -> Result<(), RecoveryError> {
@@ -790,7 +757,7 @@ impl RecoveryService {
                             cancel.clone(),
                         ),
                         cancel.clone(),
-                        service.config.diagnosis_timeout_secs,
+                        service.config.summary_timeout_secs,
                     )
                     .await;
                     service.with_state(|s| {
@@ -854,137 +821,24 @@ impl RecoveryService {
                 return self.cancel_task(&task);
             }
             match task.stage {
-                RecoveryStage::Queued | RecoveryStage::Diagnosing
-                    if task.diagnosis_call.is_none() =>
-                {
+                RecoveryStage::Queued => {
                     let observation = bounded(
                         self.backend
                             .inspect(&self.config.target, cancellation.clone()),
                         cancellation.clone(),
-                        self.config.diagnosis_timeout_secs,
+                        self.config.target.action_timeout_secs,
                     )
                     .await?;
-                    if task.stage == RecoveryStage::Queued
-                        && self
-                            .config
-                            .approval
-                            .allowed_action_kinds
-                            .iter()
-                            .any(|kind| kind == "repair_with_harness")
-                    {
-                        self.with_state(|s| {
-                            s.apply(
-                                RecoveryCommand::StartRepair {
-                                    task_id: id.into(),
-                                    revision: task.revision,
-                                    observation,
-                                },
-                                self.clock.now_ms(),
-                            )
-                        })?;
-                        continue;
-                    }
-                    let effects = self.with_state(|s| {
-                        let event = if task.stage == RecoveryStage::Queued {
-                            let mut conditions = observation.facts.clone();
-                            conditions.insert(
-                                "fault_fingerprint".into(),
-                                task.problem.fingerprint.clone(),
-                            );
-                            conditions
-                                .insert("platform".into(), self.config.target.platform.clone());
-                            let candidate =
-                                if task.episode_count >= self.config.minimum_script_occurrences {
-                                    s.knowledge
-                                        .search_reusable(&KnowledgeQuery {
-                                            conditions,
-                                            keywords: task.problem.keywords.clone(),
-                                            limit: 100,
-                                        })
-                                        .map_err(super::service)?
-                                        .into_iter()
-                                        .find(|v| {
-                                            !s.workflow.is_quarantined(
-                                                &v.candidate.script.id,
-                                                v.candidate.script.version,
-                                            )
-                                        })
-                                } else {
-                                    None
-                                };
-                            RecoveryEvent::SelectPlan {
+                    self.with_state(|s| {
+                        s.apply(
+                            RecoveryCommand::StartRepair {
                                 task_id: id.into(),
                                 revision: task.revision,
                                 observation,
-                                candidate,
-                            }
-                        } else {
-                            RecoveryEvent::RetryDiagnosis {
-                                task_id: id.into(),
-                                revision: task.revision,
-                                observation,
-                            }
-                        };
-                        s.event(event, self.clock.now_ms())
+                            },
+                            self.clock.now_ms(),
+                        )
                     })?;
-                    for effect in effects {
-                        if let RecoveryEffect::Diagnose {
-                            task,
-                            call_id,
-                            timeout_secs,
-                            ..
-                        } = effect
-                        {
-                            let observation = task
-                                .observation
-                                .clone()
-                                .ok_or_else(|| service("missing observation"))?;
-                            let knowledge = self.with_state(|s| {
-                                Ok(s.knowledge
-                                    .search(&KnowledgeQuery {
-                                        conditions: observation.facts.clone(),
-                                        keywords: task.problem.keywords.clone(),
-                                        limit: 32,
-                                    })
-                                    .map_err(super::service)?
-                                    .into_iter()
-                                    .map(|r| r.candidate)
-                                    .collect())
-                            })?;
-                            let result = bounded(
-                                self.backend.diagnose(
-                                    DiagnosisInput {
-                                        task: *task.clone(),
-                                        config: self.config.clone(),
-                                        observation,
-                                        knowledge,
-                                    },
-                                    cancellation.clone(),
-                                ),
-                                cancellation.clone(),
-                                timeout_secs,
-                            )
-                            .await;
-                            self.with_state(|s| {
-                                let event = match result {
-                                    Ok(plan) => RecoveryEvent::DiagnosisCompleted {
-                                        task_id: id.into(),
-                                        revision: task.revision,
-                                        call_id,
-                                        plan,
-                                    },
-                                    Err(error) => RecoveryEvent::DiagnosisFailed {
-                                        task_id: id.into(),
-                                        revision: task.revision,
-                                        call_id,
-                                        reason: bounded_reason(&error),
-                                    },
-                                };
-                                s.event(event, self.clock.now_ms())?;
-                                Ok(())
-                            })?;
-                        }
-                    }
                 }
                 RecoveryStage::AwaitingApproval => {
                     if task.approval_id.is_none() {
@@ -998,7 +852,7 @@ impl RecoveryService {
                         record.state,
                         ApprovalState::Pending | ApprovalState::WaitingHuman
                     ) {
-                        if !self.review(&task, &record, cancellation.clone()).await? {
+                        if !self.review(&record, cancellation.clone()).await? {
                             return self.with_state(|s| s.task(id));
                         }
                     } else {
@@ -1061,7 +915,6 @@ impl RecoveryService {
     }
     async fn review(
         &self,
-        task: &RecoveryTask,
         record: &ApprovalRecord,
         cancellation: Cancellation,
     ) -> Result<bool, RecoveryError> {
@@ -1128,7 +981,6 @@ impl RecoveryService {
                     request: record.request.clone(),
                     attempt: attempt.clone(),
                     observation,
-                    reused_script: task.reused_script,
                 },
                 cancellation.clone(),
             ),
@@ -1314,7 +1166,7 @@ impl RecoveryService {
         });
         let result = bounded(
             self.backend.execute(
-                AuthorizedScript {
+                AuthorizedRepair {
                     permit: &permit,
                     timeout_secs,
                     dispatch_guard: Some(dispatch.clone()),
@@ -1340,20 +1192,20 @@ impl RecoveryService {
             Ok(receipt)
                 if receipt.operation_id == operation.operation_id
                     && receipt.target_id == operation.target
-                    && (operation.action["kind"] != "repair_with_harness"
-                        || receipt.execution_trace == execution_trace)
-                    && (receipt.outcome == ScriptOutcome::Unknown || receipt.executor_stopped)
+                    && receipt.execution_trace == execution_trace
+                    && (receipt.outcome == RepairExecutionOutcome::Unknown
+                        || receipt.executor_stopped)
                     && !receipt.evidence_refs.is_empty()
                     && receipt.evidence_refs.len() <= 32
                     && receipt.summary.len() <= 8192 =>
             {
                 receipt
             }
-            result => ScriptReceipt {
+            result => RepairReceipt {
                 execution_trace,
                 operation_id: operation.operation_id.clone(),
                 target_id: operation.target.clone(),
-                outcome: ScriptOutcome::Unknown,
+                outcome: RepairExecutionOutcome::Unknown,
                 executor_stopped: false,
                 evidence_refs: vec![format!("approval:{}", permit.request_id())],
                 summary: match result {
@@ -1364,9 +1216,9 @@ impl RecoveryService {
         };
         self.with_state(|s| {
             let outcome = match receipt.outcome {
-                ScriptOutcome::Executed => ExecutionOutcome::Executed,
-                ScriptOutcome::Failed => ExecutionOutcome::Failed,
-                ScriptOutcome::Unknown => ExecutionOutcome::Unknown,
+                RepairExecutionOutcome::Executed => ExecutionOutcome::Executed,
+                RepairExecutionOutcome::Failed => ExecutionOutcome::Failed,
+                RepairExecutionOutcome::Unknown => ExecutionOutcome::Unknown,
             };
             let approval = s.approvals.complete(
                 permit,
@@ -1496,7 +1348,7 @@ struct ExecutionDispatch {
 impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
     fn prepare_repair_action(
         &self,
-        script: &recuvora_core::recovery::knowledge::ScriptArtifact,
+        action: &recuvora_core::recovery::knowledge::RepairArtifact,
     ) -> Result<(), crate::integrations::extensions::ExtensionError> {
         use crate::integrations::extensions::ExtensionError;
         self.validate()?;
@@ -1513,7 +1365,7 @@ impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
                 RecoveryEvent::RepairActionPrepared {
                     task_id: task.id,
                     revision: task.revision,
-                    script: script.clone(),
+                    action: action.clone(),
                 },
                 self.service.clock.now_ms(),
             )
@@ -1545,25 +1397,26 @@ impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
             state.dispatch.available().map_err(service)?;
             state.approvals.ensure_current()?;
             state.knowledge.available().map_err(service)?;
-            let script = task.plan.as_ref().map(|plan| &plan.script).or_else(|| {
-                task.operation
-                    .as_ref()
-                    .and_then(|operation| state.workflow.repair_action(&operation.operation_id))
-            });
-            if let Some(script) = script {
+            let artifact = task
+                .operation
+                .as_ref()
+                .and_then(|operation| state.workflow.repair_action(&operation.operation_id));
+            if let Some(artifact) = artifact {
                 state
                     .knowledge
                     .state()
-                    .validate_script(script)
+                    .validate_artifact(artifact)
                     .map_err(service)?;
-                if state.workflow.is_quarantined(&script.id, script.version)
+                if state
+                    .workflow
+                    .is_quarantined(&artifact.id, artifact.version)
                     || state
                         .knowledge
                         .state()
-                        .is_quarantined(&script.id, script.version)
+                        .is_quarantined(&artifact.id, artifact.version)
                 {
                     return Err(RecoveryError::Invalid(
-                        "script quarantined before send".into(),
+                        "action quarantined before send".into(),
                     ));
                 }
             }

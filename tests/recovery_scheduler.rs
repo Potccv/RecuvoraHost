@@ -1,7 +1,6 @@
 use recuvora_core::recovery::approval::{
     ApprovalDecision, ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity,
 };
-use recuvora_core::recovery::knowledge::ScriptArtifact;
 use recuvora_host::integrations::recovery::*;
 use recuvora_host::integrations::recovery::{IncidentTrigger, RecoveryScheduler};
 use recuvora_host::monitoring::*;
@@ -29,29 +28,24 @@ fn config() -> RecoveryConfig {
         },
         delegation: "review explicitly scoped target proposals".into(),
         allowed_targets: vec!["target-a".into()],
-        allowed_action_kinds: vec!["execute_script".into()],
+        allowed_action_kinds: vec!["repair_with_harness".into()],
         ttl_secs: 60,
     };
     RecoveryConfig {
-        schema_version: 1,
+        schema_version: 2,
         execution_harness: "execution".into(),
         target: TargetBinding {
             target_id: "target-a".into(),
             executor_id: "target-node".into(),
-            platform: "portable".into(),
-            allowed_languages: vec!["python".into()],
-            diagnostic_queries: vec!["snapshot".into()],
+            allowed_action_kinds: vec!["execute_script".into()],
             verification_profile: "readiness".into(),
             required_facts: BTreeMap::from([("workload_version".into(), "1".into())]),
             action_timeout_secs: 10,
         },
         approval: policy.clone(),
-        script_approval: policy,
-        diagnosis_timeout_secs: 10,
+        summary_timeout_secs: 10,
         review_timeout_secs: 10,
         max_tool_calls: 4,
-        max_diagnoses: 2,
-        minimum_script_occurrences: 1,
         max_tasks: 20,
     }
 }
@@ -129,15 +123,15 @@ impl ObservationSource for Source {
 }
 
 struct Backend {
-    diagnoses: AtomicUsize,
-    block_diagnosis: bool,
+    inspections: AtomicUsize,
+    block_inspection: bool,
     completed_pending: AtomicBool,
 }
 impl Backend {
-    fn new(block_diagnosis: bool) -> Self {
+    fn new(block_inspection: bool) -> Self {
         Self {
-            diagnoses: AtomicUsize::new(0),
-            block_diagnosis,
+            inspections: AtomicUsize::new(0),
+            block_inspection,
             completed_pending: AtomicBool::new(false),
         }
     }
@@ -146,44 +140,22 @@ impl RepairBackend for Backend {
     fn inspect<'a>(
         &'a self,
         target: &'a TargetBinding,
-        _: Cancellation,
+        cancellation: Cancellation,
     ) -> RecoveryFuture<'a, TargetObservation> {
         Box::pin(async move {
+            self.inspections.fetch_add(1, Ordering::SeqCst);
+            if self.block_inspection {
+                cancellation.cancelled().await;
+                self.completed_pending.store(true, Ordering::SeqCst);
+                return Err(RecoveryError::Service(
+                    "inspection cooperatively canceled".into(),
+                ));
+            }
             Ok(TargetObservation {
                 target_id: target.target_id.clone(),
                 facts: target.required_facts.clone(),
                 evidence_refs: vec!["inspection:1".into()],
                 observed_at_ms: SystemRecoveryClock.now_ms(),
-            })
-        })
-    }
-    fn diagnose(
-        &self,
-        input: DiagnosisInput,
-        cancellation: Cancellation,
-    ) -> RecoveryFuture<'_, RepairPlan> {
-        Box::pin(async move {
-            self.diagnoses.fetch_add(1, Ordering::SeqCst);
-            if self.block_diagnosis {
-                cancellation.cancelled().await;
-                self.completed_pending.store(true, Ordering::SeqCst);
-                return Err(RecoveryError::Service(
-                    "diagnosis cooperatively canceled".into(),
-                ));
-            }
-            Ok(RepairPlan {
-                summary: "bounded target proposal".into(),
-                reusable: true,
-                script: ScriptArtifact {
-                    id: "script-a".into(),
-                    version: 1,
-                    language: "python".into(),
-                    platform: "portable".into(),
-                    source: "print('test proposal never executed')".into(),
-                    preconditions: input.config.target.required_facts,
-                    generated_by_harness: input.config.execution_harness,
-                    generated_in_session: "diagnosis-session".into(),
-                },
             })
         })
     }
@@ -204,9 +176,9 @@ impl RepairBackend for Backend {
     }
     fn execute<'a>(
         &'a self,
-        _: AuthorizedScript<'a>,
+        _: AuthorizedRepair<'a>,
         _: Cancellation,
-    ) -> RecoveryFuture<'a, ScriptReceipt> {
+    ) -> RecoveryFuture<'a, RepairReceipt> {
         Box::pin(async { panic!("denied or canceled tasks must never execute") })
     }
     fn verify(
@@ -229,7 +201,7 @@ async fn wait_for(mut condition: impl FnMut() -> bool) {
 }
 
 #[tokio::test]
-async fn same_active_incident_is_not_rediagnosed_after_terminal_task_or_restart() {
+async fn same_active_incident_is_not_reinspected_after_terminal_task_or_restart() {
     let dir = TestDir::new("scheduler-dedup");
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
@@ -264,7 +236,7 @@ async fn same_active_incident_is_not_rediagnosed_after_terminal_task_or_restart(
     })
     .await;
     tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(backend.diagnoses.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.inspections.load(Ordering::SeqCst), 2);
     assert_eq!(recovery.tasks().unwrap().len(), 1);
     scheduler.shutdown().await.unwrap();
     assert!(monitor.handle().snapshot().unwrap().running);
@@ -285,14 +257,14 @@ async fn same_active_incident_is_not_rediagnosed_after_terminal_task_or_restart(
     )
     .unwrap();
     tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(backend.diagnoses.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.inspections.load(Ordering::SeqCst), 2);
     assert_eq!(reopened.tasks().unwrap().len(), 1);
     scheduler.shutdown().await.unwrap();
     monitor.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn shutdown_cancels_and_waits_for_original_diagnosis_without_stopping_monitor() {
+async fn shutdown_cancels_and_waits_for_original_inspection_without_stopping_monitor() {
     let dir = TestDir::new("scheduler-wait_for_idle");
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
@@ -318,7 +290,7 @@ async fn shutdown_cancels_and_waits_for_original_diagnosis_without_stopping_moni
         Duration::from_millis(10),
     )
     .unwrap();
-    wait_for(|| backend.diagnoses.load(Ordering::SeqCst) == 1).await;
+    wait_for(|| backend.inspections.load(Ordering::SeqCst) == 1).await;
     tokio::time::timeout(Duration::from_secs(3), scheduler.shutdown())
         .await
         .unwrap()
@@ -368,7 +340,7 @@ async fn coverage_failure_never_creates_a_repair_task() {
 }
 
 #[tokio::test]
-async fn human_wait_does_not_start_repeated_diagnoses_or_block_shutdown() {
+async fn human_wait_does_not_start_repeated_inspections_or_block_shutdown() {
     let dir = TestDir::new("scheduler-human");
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
@@ -405,7 +377,7 @@ async fn human_wait_does_not_start_repeated_diagnoses_or_block_shutdown() {
     })
     .await;
     tokio::time::sleep(Duration::from_millis(60)).await;
-    assert_eq!(backend.diagnoses.load(Ordering::SeqCst), 1);
+    assert_eq!(backend.inspections.load(Ordering::SeqCst), 1);
     assert_eq!(recovery.tasks().unwrap().len(), 1);
     scheduler.shutdown().await.unwrap();
     monitor.shutdown().await.unwrap();

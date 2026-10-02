@@ -1,6 +1,6 @@
 # Host 文档索引
 
-从 [项目 README](../README.md)查看运行前提；已有存储升级先核对 [Core 0.2 导入限制](status.md#host-003)。修改源码先读 [开发指南](development.md)和 [架构](architecture.md)。本目录的内容分工与写作规则见 [AGENTS](AGENTS.md)。
+从 [项目 README](../README.md)查看运行前提；当前存储与接入范围见 [Host/Core 边界](status.md#host-003)。修改源码先读 [开发指南](development.md)和 [架构](architecture.md)。本目录的内容分工与写作规则见 [AGENTS](AGENTS.md)。
 
 ## 使用与管理
 
@@ -11,7 +11,7 @@
 | [HTTP API](api/http.md) | 身份、权限、资源、revision、分页、异步回执及静态托管 |
 | [监控](monitoring.md) | 定时轮询、规则、时效、覆盖、发现和故障提交 |
 | [恢复流程](recovery.md) | 显式启用、故障触发、调度、暂停恢复与 Unknown 结果核实 |
-| [审批](approval.md) | 审核规则、持久决定、一次许可与新旧流程差异 |
+| [审批](approval.md) | 审核规则、持久决定、一次许可与恢复/独立文本修复入口 |
 
 ## 设计与扩展接入
 
@@ -32,5 +32,5 @@
 | --- | --- |
 | [开发指南](development.md)、[源码导航](../src/README.md) | 环境准备、修改流程与模块职责 |
 | [脚本](../scripts/README.md)、[测试](../tests/README.md) | 检查命令、集中测试、隔离资源与可选 UI 检查 |
-| [实现状态](status.md)、[Core 0.2 迁移](status.md#host-003) | 当前集成能力、旧数据导入范围、迁移验收、检查证据及部署验收限制 |
+| [实现状态](status.md)、[Host/Core 接入范围](status.md#host-003) | 当前集成能力、存储边界、检查证据及部署验收限制 |
 | [项目规范](../AGENTS.md)、[文档规范](AGENTS.md) | 长期开发规则与文档内容归属 |

@@ -107,7 +107,7 @@ impl Journal {
             let header: Header =
                 serde_json::from_slice(lines.next().unwrap_or_default()).map_err(|e| {
                     JournalError::Corrupt(format!(
-                        "missing v2 header (legacy journals require explicit import): {e}"
+                        "missing v2 header (unsupported journal format): {e}"
                     ))
                 })?;
             if header.format != 2 || header.domain != domain || header.config != config {

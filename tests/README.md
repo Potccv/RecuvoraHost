@@ -4,8 +4,7 @@
 
 | 范围 | 检查内容 |
 | --- | --- |
-| Host 持久提交 | `persistence.rs` 验证提交版本与内容冲突、配置绑定、跨进程锁、恢复 Unknown、知识隔离与案例幂等；`legacy_import.rs` 验证旧事件转换及失败保留源数据 |
-| 旧恢复迁移 | `legacy_bundle.rs` 使用完整旧四域日志验证原任务/操作/审批身份、Unknown 与知识案例、源锁和共享所有权、切换失败与原子激活；`legacy_activation.rs` 验证发布前后独立进程中断；`recovery_layout.rs` 验证原根锁、入口完整性及代次路径边界 |
+| Host 持久提交 | `persistence.rs` 验证提交版本与内容冲突、配置绑定、跨进程锁、恢复 Unknown、实际动作隔离与经验幂等 |
 | 开发检查工具 | `check_script.rs` 检查参数拒绝、Host/本地依赖源码保护、链接目录拒绝、失败停止、已有数据保留与调用方环境不变 |
 | 协议约定 | `protocol.rs` 检查固定 JSON 消息、Ready 缺省字段、ID、schema 必需/额外属性、Unicode 长度、值深度与数值边界 |
 | Host 持久化 | `persistence.rs` 检查 CAS、提交内容与配置绑定、独立进程排他写锁、尾记录损坏保留及审批/故障/知识恢复；lib 中 `persistence_faults.rs` 验证已同步但确认丢失时的 Unknown 与停止写入 |
@@ -26,7 +25,7 @@
 
 派发门回归验证网络握手后的最终复核、拒绝零派发和发送后立即释放；`recovery_incident_guard` 使用实际 MonitorIncidentGuard 和 HTTP 替身验证门内过期证据不能派发，观察/确认提交等待或拒绝忙态，定时器不会因持门阻塞。
 
-Core作为依赖按生产配置编译，测试不能依赖Core自身cfg(test)的文件路径豁免。Host 维护本机文件动作的边界测试，Core 单独维护恢复决策与授权测试。`repair_backend` 使用隔离网络节点验证实际 Host 初始化、人工审批、正常执行、回执丢失后的执行结果核实、修复经验中的脚本隔离与关闭后重开；这些检查不能代替真实节点或业务验收。
+Core作为依赖按生产配置编译，测试不能依赖Core自身cfg(test)的文件路径豁免。Host 维护本机文件动作的边界测试，Core 单独维护恢复决策与授权测试。`repair_backend` 使用隔离网络节点验证实际 Host 初始化、人工审批、正常执行、回执丢失后的执行结果核实、修复经验中的实际产物隔离与关闭后重开；这些检查不能代替真实节点或业务验收。
 
 ## Cargo检查
 
@@ -56,7 +55,7 @@ cargo test --locked --test ui_contract external_ui_assets_and_http_contract -- -
 
 两个用例都使用真实 HTTP，但不执行 UI 的 `api.js`，不验证 JavaScript 客户端的错误转换、自动重试策略或浏览器/Tauri 交互。客户端行为由 UI 项目另行验证；这些用例也不调用实际模型/节点，不证明业务恢复或跨机部署。全部测试都不能把确认收到、请求接受或文本读回当作授权与恢复事实。规则见 [AGENTS](AGENTS.md)。
 
-恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
+恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 schema 2、独立 executor、ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
 
 完整检查结果见[实现状态](../docs/status.md#自动验证)。协议/网络测试通过不代替实际节点或业务恢复验收。
 

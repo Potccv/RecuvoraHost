@@ -34,16 +34,16 @@ ui_dir为null时只提供API，页面路由返回404。设置后目录必须包�
 
 recovery_config 缺省为 null，显式填写才启动 Core 恢复流程和恢复流程调度器。服务须同时初始化 Harness、扩展和监控；缺少依赖或触发绑定不匹配时拒绝启动。恢复流程文件最多 64 KiB，字段严格且未知字段拒绝；读取配置不创建状态或派发工作。
 
-RecoveryHostConfig 包含 schema_version:1、data_dir、必填 ownership_dir、recovery、triggers、interval_ms，以及可选 approval_store、knowledge_store。内层恢复配置由 RecoveryConfig 定义；审批和 knowledge 存储使用 Host 配置类型；领域集合限额交给 Core，文件字节限额由 Host 校验。data_dir 与 ownership_dir 可相对恢复流程配置目录解析，必须位于源码外，彼此不重叠，且与控制文件、TLS 信任文件、服务状态和旧文本修复状态分开。同一 target 不允许同时由自动恢复流程和旧文本流程管理恢复。Host 检查日志/锁文件身份及容量，并保护恢复流程配置、状态和共享所有权，旧文本动作不能改写它们。
+RecoveryHostConfig 包含 schema_version:2、data_dir、必填 ownership_dir、recovery、executor、triggers、interval_ms，以及可选 approval_store、knowledge_store。内层恢复配置由 RecoveryConfig 定义；审批和 knowledge 存储使用 Host 配置类型；领域集合限额交给 Core，文件字节限额由 Host 校验。data_dir 与 ownership_dir 可相对恢复流程配置目录解析，必须位于源码外，彼此不重叠，且与控制文件、TLS 信任文件、服务状态和独立文本修复状态分开。同一 target 不允许同时由自动恢复流程和独立文本流程管理恢复。Host 检查日志/锁文件身份及容量，并保护恢复流程配置、状态和共享所有权，独立文本动作不能改写它们。
 
-ownership_dir 是所有保护同一规范目标的恢复存储共用的稳定权威目录，不能根据 data_dir 自动生成，也不能通过更换它绕过未完成任务。已有恢复配置须显式补充该字段；缺失时拒绝加载，不启用自动恢复。target_id 须满足 Host CanonicalTarget 的小写稳定逻辑身份规则，目标别名由可信部署者统一映射。Host 使用 Host FileTargetOwnership 取得租约；非终态与 Unknown 保留持久所有者，同一存储可以重启恢复，其他存储继续被拒绝。读取配置不会创建这两个目录。
+ownership_dir 是所有保护同一规范目标的恢复存储共用的稳定权威目录，不能根据 data_dir 自动生成，也不能通过更换它绕过未完成任务。该字段缺失时拒绝加载，不启用自动恢复。target_id 须满足 Host CanonicalTarget 的小写稳定逻辑身份规则，目标别名由可信部署者统一映射。Host 使用 Host FileTargetOwnership 取得租约；非终态与 Unknown 保留持久所有者，同一存储可以重启恢复，其他存储继续被拒绝。读取配置不会创建这两个目录。
 
 triggers 为 1–64 项可信固定绑定，包含 monitor_id、rule_id、fingerprint、keywords、conditions，不能由观察提供方或请求正文选择；当前 rule_id 与 monitor_id 一致。interval_ms 为 10–3600000。每个触发的已登记监控必须属于 recovery.target.target_id。节点中的 executor_id、Harness address 和工作区由 Host 配置解析，不进入 Core 路由逻辑。
 
 模板见 [恢复流程](../profiles/repair.recovery.example.json)和[服务组合](../profiles/server.recovery.example.json)。原始日志上传及 CoreSettings 不属于当前 Core 或 Host 接口；log_sources 仅用于只读查询监控目标的记录，每页最多 32 条。
 
-旧文本修复入口支持 human 与 harness，拒绝需要定时转交的 human_then_harness；查看与管理已有记录仍可使用。显式自动恢复流程支持三种 Core 审批规则，到期审核由恢复流程调度器调度，不降级或隐式放行。
+独立文本修复入口支持 human 与 harness，拒绝需要定时转交的 human_then_harness；查看与管理已有记录仍可使用。显式自动恢复流程支持三种 Core 审批规则，到期审核由恢复流程调度器调度，不降级或隐式放行。
 
-Core 0.2 的内层 `recovery` 不再包含 `max_journal_bytes`，旧字段会被拒绝，模板已移除。Host 恢复事件日志使用 256 MiB 固定上限；审批和知识日志的字节上限仍分别由 `approval_store.max_journal_bytes` 和 `knowledge_store.max_journal_bytes` 配置。已有日志的可信配置不能通过直接修改配置文件变更。旧格式不会在启动时自动迁移，导入边界见 [持久化说明](../src/persistence/README.md)。
+内层 `recovery.schema_version` 同样为 2，不包含物理存储或脚本解释字段。Host 恢复事件日志使用 256 MiB 固定上限；审批和知识日志的字节上限分别由 `approval_store.max_journal_bytes` 和 `knowledge_store.max_journal_bytes` 配置。`knowledge_store` 以 `max_records` 限制经验数量，不设案例数量。已有日志的可信配置不能通过直接修改配置文件变更，持久绑定见 [持久化说明](../src/persistence/README.md)。
 
-统一恢复的新委托类型为 `repair_with_harness`，由 `recovery.approval.allowed_action_kinds` 显式允许。旧 `execute_script` 配置继续使用脚本兼容路径，`script_approval`、`minimum_script_occurrences` 和 `max_diagnoses` 保留用于该路径；统一入口不按故障轮次自动跳过 Harness。`action_timeout_secs` 限制修复会话，`diagnosis_timeout_secs` 也用于独立总结。原配置参与持久内容绑定，不能修改旧配置后直接重放已有日志；迁移不得删除历史或绕过目标所有权。
+统一委托类型为 `repair_with_harness`，由 `recovery.approval.allowed_action_kinds` 显式允许。Core 的 `recovery.target.allowed_action_kinds` 限定会话内具体动作；当前 Host 节点适配器只接受 `execute_script`。`executor` 使用 `ScriptExecutorConfig`，包含 `platform`、`allowed_languages` 和 `diagnostic_queries`，不进入 Core 目标配置。语言限 `powershell`、`sh`、`python` 中的显式子集，平台和只读查询由节点支持；Host 校验具体脚本后封装为中立产物。`recovery.target.action_timeout_secs` 限制修复会话，`recovery.summary_timeout_secs` 独立限制总结。未命中经验也进入同一 Harness 修复流程；不提供诊断生成旧方案、直接脚本复用或历史协议兼容入口。

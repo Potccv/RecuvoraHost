@@ -1,45 +1,20 @@
-//! Stable root ownership with an explicitly installed, complete storage generation.
+//! Stable root ownership; retired storage generations are rejected.
 use super::{RecoveryError, storage_paths as paths};
 use fs2::FileExt;
-use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
-    io::{Read, Seek},
+    io::Read,
     path::{Path, PathBuf},
 };
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MigrationMarker {
-    pub host_recovery_layout: u32,
-    pub generation: String,
-}
 
 #[cfg(test)]
 #[path = "../../../tests/recovery_layout.rs"]
 mod tests;
 
-impl MigrationMarker {
-    pub(crate) fn validate(&self) -> Result<(), RecoveryError> {
-        let suffix = self.generation.strip_prefix(".core02-").unwrap_or_default();
-        if self.host_recovery_layout != 1
-            || suffix.is_empty()
-            || suffix.len() > 100
-            || !suffix.bytes().all(|c| c.is_ascii_digit() || c == b'-')
-        {
-            return Err(RecoveryError::Invalid(
-                "invalid recovery migration marker".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
 pub(crate) struct RootStorageLock {
     path: PathBuf,
     file: File,
     _directories: Vec<File>,
-    marker: Option<(PathBuf, File, Vec<u8>)>,
 }
 
 impl RootStorageLock {
@@ -50,7 +25,7 @@ impl RootStorageLock {
                 .starts_with(".core02-")
         }) {
             return Err(RecoveryError::Invalid(
-                "open a migrated recovery through its original root".into(),
+                "retired recovery generation cannot be used as a storage root".into(),
             ));
         }
         let path = root.join("recovery.lock");
@@ -65,7 +40,6 @@ impl RootStorageLock {
             path,
             file,
             _directories: directories,
-            marker: None,
         })
     }
 
@@ -86,32 +60,9 @@ impl RootStorageLock {
         {
             return Ok(root.to_path_buf());
         }
-        if bytes.len() > 1024
-            || file.metadata()?.len() != bytes.len() as u64
-            || bytes.last() != Some(&b'\n')
-        {
-            return Err(RecoveryError::Corrupt(
-                "invalid migration marker size or tail".into(),
-            ));
-        }
-        let marker: MigrationMarker = serde_json::from_slice(&bytes)?;
-        marker.validate()?;
-        let directory = root.join(&marker.generation);
-        for name in [
-            "recovery.jsonl",
-            "dispatch.jsonl",
-            "approvals/approvals.jsonl",
-            "knowledge.jsonl",
-            "legacy-recovery.jsonl",
-        ] {
-            if !directory.join(name).is_file() {
-                return Err(RecoveryError::Corrupt(
-                    "incomplete migrated recovery generation".into(),
-                ));
-            }
-        }
-        self.marker = Some((path, file, bytes));
-        Ok(directory)
+        Err(RecoveryError::Corrupt(
+            "retired recovery storage layout is unsupported".into(),
+        ))
     }
 
     pub(crate) fn validate(&self) -> Result<(), RecoveryError> {
@@ -120,16 +71,6 @@ impl RootStorageLock {
             return Err(RecoveryError::Corrupt(
                 "recovery identity lock changed".into(),
             ));
-        }
-        if let Some((path, file, original)) = &self.marker {
-            paths::validate_current(path, file)?;
-            let mut reader = file.try_clone()?;
-            reader.rewind()?;
-            let mut current = Vec::new();
-            reader.take(1025).read_to_end(&mut current)?;
-            if current != *original {
-                return Err(RecoveryError::Corrupt("migration marker changed".into()));
-            }
         }
         Ok(())
     }

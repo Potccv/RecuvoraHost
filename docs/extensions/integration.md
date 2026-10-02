@@ -14,7 +14,7 @@
 | 独立页面描述、快照与部署 URL 校验 | `src/integrations/extensions/ui_links.rs`、`page_urls.rs` |
 | 远端 Harness provider/factory 与工具回调 | `src/integrations/harness/` |
 | ExtensionRegistry 到 ObservationSource 的适配 | `src/integrations/monitoring/mod.rs` |
-| ExtensionRegistry/HarnessRegistry 到 RepairBackend 的适配 | `src/integrations/recovery/node_backend.rs` |
+| ExtensionRegistry/HarnessRegistry 到 RepairBackend 的适配与 Host 脚本解释 | `src/integrations/recovery/node_backend.rs`、`executor.rs`、`harness_repair.rs` |
 | Core 恢复流程配置、按配置启动，关闭时等待当前任务结束 | `src/configuration/recovery.rs`、`src/boot/host.rs` |
 | 监控故障绑定、IncidentGuard 与恢复流程调度 | `src/integrations/recovery/incident_guard.rs`、`scheduler.rs` |
 | Core 任务、审批、修复经验与根据节点证据核实结果的 HTTP 管理 | `src/server/recovery.rs` |
@@ -22,4 +22,4 @@
 
 插件目录通过 `GET /api/v1/ui/catalog` 提供声明式监控视图及独立页面入口，字段与刷新接口见[页面契约](pages.md)。`GET /api/v1/ui/plugins/{plugin_id}/views/{view_id}` 的 renderer 为 `monitoring_v1`，返回经 Host 校验和权限过滤的只读文档；旧 `/api/v1/monitoring/plugins/{id}` 保留为兼容接口。页面和 view 描述均不允许选择任意服务调用，也不产生写权限。
 
-Host wire/schema 由本包 `protocol` 模块实现；节点/插件依据文档独立实现，不依赖宿主包。Core 仅接收稳定业务 trait 和领域类型，不感知 endpoint、ExtensionRegistry 或 UI capability。
+Host wire/schema 由本包 `protocol` 模块实现；节点/插件依据文档独立实现，不依赖宿主包。Core 仅接收逻辑身份、中立动作产物和领域类型，不感知 endpoint、ExtensionRegistry 或 UI capability。

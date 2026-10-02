@@ -3,7 +3,7 @@ use super::*;
 use crate::workflow_test_support::TestDir;
 use recuvora_core::recovery::{
     approval::{ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity},
-    knowledge::ScriptArtifact,
+    knowledge::{ExperienceReport, RepairArtifact, Scriptability},
 };
 use std::{collections::BTreeMap, io::Write};
 
@@ -50,6 +50,23 @@ impl Backend {
     }
 }
 impl RepairBackend for Backend {
+    fn summarize(
+        &self,
+        _: recuvora_core::recovery::workflow::ExperienceJob,
+        _: RecoveryConfig,
+        _: Cancellation,
+    ) -> RecoveryFuture<'_, ExperienceReport> {
+        Box::pin(async {
+            Ok(ExperienceReport {
+                summary: "persisted repair result".into(),
+                lessons: "verify independently".into(),
+                related_experience_ids: vec![],
+                scriptability: Scriptability::Undetermined {
+                    reason: "fixture only".into(),
+                },
+            })
+        })
+    }
     fn inspect<'a>(
         &'a self,
         target: &'a TargetBinding,
@@ -61,25 +78,6 @@ impl RepairBackend for Backend {
                 facts: target.required_facts.clone(),
                 evidence_refs: vec!["provider:inspection".into()],
                 observed_at_ms: 20_000,
-            })
-        })
-    }
-    fn diagnose(&self, input: DiagnosisInput, _: Cancellation) -> RecoveryFuture<'_, RepairPlan> {
-        Box::pin(async move {
-            self.record("diagnoses.log", &input.task.id)?;
-            Ok(RepairPlan {
-                summary: "bounded fixture plan".into(),
-                reusable: true,
-                script: ScriptArtifact {
-                    id: "script-a".into(),
-                    version: 1,
-                    language: "python".into(),
-                    platform: input.config.target.platform,
-                    source: "fixture action".into(),
-                    preconditions: input.config.target.required_facts,
-                    generated_by_harness: input.config.execution_harness,
-                    generated_in_session: "diagnosis-session".into(),
-                },
             })
         })
     }
@@ -100,25 +98,35 @@ impl RepairBackend for Backend {
     }
     fn execute<'a>(
         &'a self,
-        script: AuthorizedScript<'a>,
+        script: AuthorizedRepair<'a>,
         _: Cancellation,
-    ) -> RecoveryFuture<'a, ScriptReceipt> {
+    ) -> RecoveryFuture<'a, RepairReceipt> {
         Box::pin(async move {
             let guard = script.dispatch_guard().expect("Host dispatch gate");
+            let action = RepairArtifact {
+                id: format!("{}-action", script.operation().operation_id),
+                version: 1,
+                kind: "execute_script".into(),
+                payload: serde_json::json!({"language":"python","source":"fixture action"}),
+                preconditions: config().target.required_facts,
+                generated_by_harness: "executor".into(),
+                generated_in_session: script.operation().operation_id.clone(),
+            };
+            guard.prepare_repair_action(&action).map_err(service)?;
             guard.validate().map_err(service)?;
             self.record("executions.log", &script.operation().operation_id)?;
             guard.release();
-            Ok(ScriptReceipt {
-                execution_trace: Vec::new(),
+            Ok(RepairReceipt {
+                execution_trace: vec![action],
                 operation_id: script.operation().operation_id.clone(),
                 target_id: script.operation().target.clone(),
                 outcome: if matches!(
                     std::env::var("RECUVORA_RECOVERY_CRASH_BOUNDARY").as_deref(),
                     Ok("result_check_reconciled" | "result_check_saved")
                 ) {
-                    ScriptOutcome::Unknown
+                    RepairExecutionOutcome::Unknown
                 } else {
-                    ScriptOutcome::Executed
+                    RepairExecutionOutcome::Executed
                 },
                 executor_stopped: true,
                 evidence_refs: vec!["executor:durable-receipt".into()],
@@ -155,29 +163,24 @@ fn config() -> RecoveryConfig {
         },
         delegation: "bounded external action".into(),
         allowed_targets: vec!["target-a".into()],
-        allowed_action_kinds: vec!["execute_script".into()],
+        allowed_action_kinds: vec!["repair_with_harness".into()],
         ttl_secs: 60,
     };
     RecoveryConfig {
-        schema_version: 1,
+        schema_version: 2,
         execution_harness: "executor".into(),
         target: TargetBinding {
             target_id: "target-a".into(),
             executor_id: "node-a".into(),
-            platform: "portable".into(),
-            allowed_languages: vec!["python".into()],
-            diagnostic_queries: vec!["snapshot".into()],
+            allowed_action_kinds: vec!["execute_script".into()],
             verification_profile: "readiness".into(),
             required_facts: BTreeMap::from([("workload_version".into(), "1".into())]),
             action_timeout_secs: 10,
         },
         approval: policy.clone(),
-        script_approval: policy,
-        diagnosis_timeout_secs: 10,
+        summary_timeout_secs: 10,
         review_timeout_secs: 10,
         max_tool_calls: 4,
-        max_diagnoses: 2,
-        minimum_script_occurrences: 1,
         max_tasks: 20,
     }
 }
@@ -297,11 +300,6 @@ async fn assert_boundary(boundary: &str) {
     let tasks = service.tasks().unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(
-        lines(&dir.path, "diagnoses.log"),
-        1,
-        "restart cannot repeat diagnosis"
-    );
-    assert_eq!(
         lines(&dir.path, "executions.log"),
         executed_before,
         "open cannot replay effects"
@@ -374,7 +372,7 @@ async fn assert_boundary(boundary: &str) {
             assert_eq!(task.stage, RecoveryStage::Completed);
             service
                 .with_state(|state| {
-                    assert_eq!(state.workflow.pending_deliveries().len(), 1);
+                    assert_eq!(state.workflow.pending_experiences().len(), 1);
                     Ok(())
                 })
                 .unwrap();
@@ -390,24 +388,55 @@ async fn assert_boundary(boundary: &str) {
     }
     assert_eq!(task.operation.as_ref(), Some(&original_operation));
     service
+        .summarize_pending(Cancellation::new())
+        .await
+        .unwrap();
+    service
         .with_state(|state| {
             assert_eq!(
                 state.approvals.list().len(),
                 1,
                 "original operation has exactly one approval"
             );
-            assert!(state.workflow.pending_deliveries().is_empty());
+            assert!(state.workflow.pending_experiences().is_empty());
             let knowledge = state.knowledge.snapshot();
-            assert_eq!(knowledge.records.len(), 1);
-            let case_ids = knowledge.records[0]
-                .cases
+            assert_eq!(
+                knowledge.experiences.len(),
+                if boundary == "approval_completed" {
+                    2
+                } else {
+                    1
+                }
+            );
+            if boundary == "approval_completed" {
+                use recuvora_core::recovery::knowledge::RepairOutcome;
+                assert!(
+                    knowledge
+                        .experiences
+                        .iter()
+                        .any(|item| item.outcome == RepairOutcome::Unknown)
+                );
+                assert!(
+                    knowledge
+                        .experiences
+                        .iter()
+                        .any(|item| item.outcome == RepairOutcome::Verified)
+                );
+                assert!(
+                    state
+                        .knowledge
+                        .is_quarantined(&format!("{}-action", original_operation.operation_id), 1)
+                );
+            }
+            let ids = knowledge
+                .experiences
                 .iter()
-                .map(|case| &case.result.id)
+                .map(|item| &item.id)
                 .collect::<BTreeSet<_>>();
             assert_eq!(
-                case_ids.len(),
-                knowledge.records[0].cases.len(),
-                "delivery retry cannot duplicate a case"
+                ids.len(),
+                knowledge.experiences.len(),
+                "delivery retry cannot duplicate an experience"
             );
             Ok(())
         })

@@ -8,5 +8,3 @@ mod paths;
 #[cfg(test)]
 #[path = "../../tests/persistence_faults.rs"]
 mod faults;
-
-pub mod legacy;

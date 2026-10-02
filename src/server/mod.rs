@@ -211,6 +211,7 @@ pub struct Console {
     repair: Option<Arc<RepairSession>>,
     repair_config: Option<RepairConfig>,
     recovery: Option<Arc<RecoveryService>>,
+    recovery_executor: Option<crate::integrations::recovery::ScriptExecutorConfig>,
     simulation: EngineHandle,
     journal: Mutex<Journal>,
     calls: Mutex<BTreeMap<String, HarnessCancellation>>,
@@ -290,6 +291,9 @@ impl Console {
                     .map_err(ApiError::from)
             })
             .transpose()?;
+        let recovery_executor = recovery_config
+            .as_ref()
+            .map(|config| config.executor.clone());
         let recovery_storage: Vec<_> = recovery_config
             .iter()
             .flat_map(|config| [config.data_dir.clone(), config.ownership_dir.clone()])
@@ -488,6 +492,7 @@ impl Console {
                 repair,
                 repair_config,
                 recovery,
+                recovery_executor,
                 simulation: handle,
                 journal: Mutex::new(journal),
                 calls: Mutex::new(BTreeMap::new()),

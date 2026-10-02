@@ -1,22 +1,12 @@
 use super::*;
 use crate::runtime::operation::Cancellation;
 use recuvora_core::recovery::approval;
-use recuvora_core::recovery::knowledge::KnowledgeCandidate;
 use std::{future::Future, pin::Pin};
-#[derive(Clone, Debug)]
-pub struct DiagnosisInput {
-    pub task: RecoveryTask,
-    pub config: RecoveryConfig,
-    pub observation: TargetObservation,
-    /// Applicable verified cases are evidence for a new plan, never authority.
-    pub knowledge: Vec<KnowledgeCandidate>,
-}
 #[derive(Clone, Debug)]
 pub struct ReviewInput {
     pub request: approval::ApprovalRequest,
     pub attempt: approval::ReviewAttempt,
     pub observation: TargetObservation,
-    pub reused_script: bool,
 }
 #[derive(Clone, Debug)]
 pub struct ReviewOutput {
@@ -27,19 +17,19 @@ pub struct ReviewOutput {
 pub struct VerificationInput {
     pub target: TargetBinding,
     pub operation: approval::ProposedOperation,
-    pub receipt: ScriptReceipt,
+    pub receipt: RepairReceipt,
 }
 
 /// Only the Host workflow adapter constructs this value after confirming the
 /// Core execution authorization. It cannot be cloned/deserialized and grants
 /// one dispatch to a trusted backend, subject to the final dispatch gate.
-pub struct AuthorizedScript<'a> {
+pub struct AuthorizedRepair<'a> {
     pub(super) permit: &'a approval::ExecutionPermit,
     pub(super) timeout_secs: u64,
     pub(super) dispatch_guard:
         Option<std::sync::Arc<dyn crate::integrations::extensions::DispatchGuard>>,
 }
-impl AuthorizedScript<'_> {
+impl AuthorizedRepair<'_> {
     pub fn operation(&self) -> &approval::ProposedOperation {
         self.permit.operation()
     }
@@ -89,6 +79,14 @@ pub type RecoveryFuture<'a, T> =
 /// returns if it fails to release early; it cannot perform that final validation
 /// on behalf of a custom backend.
 pub trait RepairBackend: Send + Sync {
+    /// Stable trusted Host settings that constrain this backend's dispatch scope.
+    /// Recovery journals bind this value for their entire lifetime. Backends with
+    /// extra dispatch configuration must return it here; wrappers must forward it.
+    /// The default is for backends with no configuration beyond RecoveryConfig.
+    fn persistence_binding(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
     /// Read-only post-repair reflection; failure must never rerun the repair.
     fn summarize(
         &self,
@@ -103,11 +101,6 @@ pub trait RepairBackend: Send + Sync {
         target: &'a TargetBinding,
         cancellation: Cancellation,
     ) -> RecoveryFuture<'a, TargetObservation>;
-    fn diagnose(
-        &self,
-        input: DiagnosisInput,
-        cancellation: Cancellation,
-    ) -> RecoveryFuture<'_, RepairPlan>;
     fn review(
         &self,
         input: ReviewInput,
@@ -115,9 +108,9 @@ pub trait RepairBackend: Send + Sync {
     ) -> RecoveryFuture<'_, ReviewOutput>;
     fn execute<'a>(
         &'a self,
-        script: AuthorizedScript<'a>,
+        script: AuthorizedRepair<'a>,
         cancellation: Cancellation,
-    ) -> RecoveryFuture<'a, ScriptReceipt>;
+    ) -> RecoveryFuture<'a, RepairReceipt>;
     fn verify(
         &self,
         input: VerificationInput,

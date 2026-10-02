@@ -10,66 +10,21 @@ use thiserror::Error;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum StoredCommand {
-    RecordExperience(RepairExperience),
+    RecordExperience(Box<RepairExperience>),
     ExpandCapacity {
         expected: KnowledgeConfig,
         target: KnowledgeConfig,
-    },
-    UpsertCandidate(KnowledgeCandidate),
-    RecordOutcome {
-        record_id: String,
-        case: RepairCase,
-        verification: Option<BusinessVerificationRecord>,
-    },
-    Disable {
-        record_id: String,
-        expected_revision: u64,
-        actor: String,
-        reason: String,
     },
 }
 impl StoredCommand {
     fn trusted(self) -> Result<KnowledgeCommand, KnowledgeError> {
         Ok(match self {
             Self::RecordExperience(item) => {
-                KnowledgeCommand::RecordExperience(TrustedRepairExperience::attest(item)?)
+                KnowledgeCommand::RecordExperience(TrustedRepairExperience::attest(*item)?)
             }
             Self::ExpandCapacity { expected, target } => {
                 KnowledgeCommand::ExpandCapacity { expected, target }
             }
-            Self::UpsertCandidate(candidate) => KnowledgeCommand::UpsertCandidate(candidate),
-            Self::RecordOutcome {
-                record_id,
-                case,
-                verification,
-            } => KnowledgeCommand::RecordOutcome {
-                record_id,
-                case,
-                verification: verification
-                    .map(|v| {
-                        TrustedBusinessVerification::attest(
-                            v.operation_id,
-                            v.target_id,
-                            v.script_id,
-                            v.script_version,
-                            v.verifier_id,
-                            v.evidence_refs,
-                            v.verified_at_ms,
-                        )
-                    })
-                    .transpose()?,
-            },
-            Self::Disable {
-                record_id,
-                expected_revision,
-                actor,
-                reason,
-            } => KnowledgeCommand::Disable {
-                record_id,
-                expected_revision,
-                actor,
-                reason,
-            },
         })
     }
 }
@@ -101,7 +56,6 @@ impl KnowledgeStore {
         )?;
         let limits = KnowledgeConfig {
             max_records: config.max_records,
-            max_cases_per_record: config.max_cases_per_record,
         };
         let entries = journal
             .records()
@@ -133,34 +87,25 @@ impl KnowledgeStore {
     pub fn snapshot(&self) -> KnowledgeSnapshot {
         self.state.snapshot()
     }
-    pub fn get(&self, id: &str) -> Option<KnowledgeRecord> {
+    pub fn get(&self, id: &str) -> Option<RepairExperience> {
         self.state.get(id)
     }
-    pub fn validate_script(&self, script: &ScriptArtifact) -> Result<(), KnowledgeError> {
-        Ok(self.state.validate_script(script)?)
+    pub fn validate_artifact(&self, artifact: &RepairArtifact) -> Result<(), KnowledgeError> {
+        Ok(self.state.validate_artifact(artifact)?)
     }
     pub fn is_quarantined(&self, id: &str, version: u64) -> bool {
         self.state.is_quarantined(id, version)
     }
-    pub fn search(&self, query: &KnowledgeQuery) -> Result<Vec<KnowledgeRecord>, KnowledgeError> {
-        Ok(self.state.search(query)?)
-    }
-    pub fn search_reusable(
+    pub fn search_experiences(
         &self,
         query: &KnowledgeQuery,
-    ) -> Result<Vec<KnowledgeRecord>, KnowledgeError> {
-        Ok(self.state.search_reusable(query)?)
-    }
-    pub fn inspect(
-        &self,
-        query: &KnowledgeInspectionQuery,
-    ) -> Result<Vec<KnowledgeRecordProjection>, KnowledgeError> {
-        Ok(self.state.inspect(query)?)
+    ) -> Result<Vec<RepairExperience>, KnowledgeError> {
+        Ok(self.state.search_experiences(query)?)
     }
     pub fn projection(&self) -> KnowledgeProjection {
         self.state.projection()
     }
-    /// Persist an explicit monotonic domain capacity migration. Reopen still
+    /// Persist an explicit monotonic domain capacity expansion. Reopen still
     /// requires the original StoreConfig; replay derives the expanded limits.
     pub fn expand_capacity(
         &mut self,
@@ -181,44 +126,6 @@ impl KnowledgeStore {
             TrustedRepairExperience::attest(record)?,
         ))
     }
-    pub fn upsert_candidate(
-        &mut self,
-        candidate: KnowledgeCandidate,
-    ) -> Result<KnowledgeRecord, KnowledgeError> {
-        let id = candidate.id.clone();
-        self.commit(KnowledgeCommand::UpsertCandidate(candidate))?;
-        self.get(&id).ok_or(KnowledgeError::NotFound(id))
-    }
-    pub fn record_outcome(
-        &mut self,
-        record_id: &str,
-        case: RepairCase,
-        verification: Option<TrustedBusinessVerification>,
-    ) -> Result<KnowledgeRecord, KnowledgeError> {
-        self.commit(KnowledgeCommand::RecordOutcome {
-            record_id: record_id.into(),
-            case,
-            verification,
-        })?;
-        self.get(record_id)
-            .ok_or_else(|| KnowledgeError::NotFound(record_id.into()))
-    }
-    pub fn disable(
-        &mut self,
-        record_id: &str,
-        expected_revision: u64,
-        actor: &str,
-        reason: &str,
-    ) -> Result<KnowledgeRecord, KnowledgeError> {
-        self.commit(KnowledgeCommand::Disable {
-            record_id: record_id.into(),
-            expected_revision,
-            actor: actor.into(),
-            reason: reason.into(),
-        })?;
-        self.get(record_id)
-            .ok_or_else(|| KnowledgeError::NotFound(record_id.into()))
-    }
     pub fn close(&mut self) -> Result<(), KnowledgeError> {
         Ok(self.journal.close()?)
     }
@@ -227,7 +134,6 @@ impl KnowledgeStore {
 #[serde(default, deny_unknown_fields)]
 pub struct KnowledgeStoreConfig {
     pub max_records: usize,
-    pub max_cases_per_record: usize,
     pub max_journal_bytes: u64,
 }
 
@@ -235,7 +141,6 @@ impl Default for KnowledgeStoreConfig {
     fn default() -> Self {
         Self {
             max_records: 1024,
-            max_cases_per_record: 128,
             max_journal_bytes: 64 * 1024 * 1024,
         }
     }
@@ -244,7 +149,6 @@ impl Default for KnowledgeStoreConfig {
 impl KnowledgeStoreConfig {
     pub fn validate(&self) -> Result<(), KnowledgeError> {
         if !(1..=100_000).contains(&self.max_records)
-            || !(1..=1024).contains(&self.max_cases_per_record)
             || !(1..=1024 * 1024 * 1024).contains(&self.max_journal_bytes)
         {
             return Err(KnowledgeError::Invalid("store limits out of range".into()));
@@ -259,8 +163,6 @@ pub enum KnowledgeError {
     Invalid(String),
     #[error("knowledge state conflict: {0}")]
     Conflict(String),
-    #[error("knowledge record not found: {0}")]
-    NotFound(String),
     #[error("knowledge capacity exhausted: {0}")]
     Capacity(String),
     #[error("corrupt knowledge journal: {0}")]
@@ -277,7 +179,6 @@ impl From<recuvora_core::recovery::knowledge::KnowledgeError> for KnowledgeError
         match error {
             E::Invalid(value) => Self::Invalid(value),
             E::Conflict(value) => Self::Conflict(value),
-            E::NotFound(value) => Self::NotFound(value),
             E::Capacity(value) => Self::Capacity(value),
             other => Self::Corrupt(other.to_string()),
         }

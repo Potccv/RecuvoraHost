@@ -1,6 +1,8 @@
 //! Host adapters that bind the Core recovery state machine to external nodes.
 
 mod contract;
+mod executor;
+pub use executor::ScriptExecutorConfig;
 mod harness_repair;
 mod incident_gate;
 mod incident_guard;
@@ -22,7 +24,7 @@ pub use service::RecoveryService;
 
 pub use recuvora_core::recovery::workflow::{
     BusinessVerification, CheckedExecution, ExecutionResultCheck, ProblemContext, RecoveryConfig,
-    RecoveryStage, RecoveryTask, RepairPlan, ResultCheckRecord, ScriptOutcome, ScriptReceipt,
+    RecoveryStage, RecoveryTask, RepairExecutionOutcome, RepairReceipt, ResultCheckRecord,
     TargetBinding, TargetObservation,
 };
 

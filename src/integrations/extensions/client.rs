@@ -29,7 +29,7 @@ pub trait DispatchGuard: Send + Sync {
     /// Ordinary dispatch guards cannot mint this additional capability.
     fn prepare_repair_action(
         &self,
-        _script: &recuvora_core::recovery::knowledge::ScriptArtifact,
+        _script: &recuvora_core::recovery::knowledge::RepairArtifact,
     ) -> Result<(), ExtensionError> {
         Err(ExtensionError::Rejected(
             "Harness action preparation is not supported by this guard".into(),

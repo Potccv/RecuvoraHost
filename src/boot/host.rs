@@ -118,6 +118,7 @@ impl HostRuntime {
         &self,
         data_dir: impl AsRef<Path>,
         config: RecoveryConfig,
+        executor: crate::integrations::recovery::ScriptExecutorConfig,
     ) -> Result<Arc<RecoveryService>, RecoveryError> {
         let data_dir = external_path(data_dir.as_ref())?;
         let harnesses = self
@@ -129,7 +130,7 @@ impl HostRuntime {
         RecoveryService::open(
             data_dir,
             config,
-            Arc::new(NodeRepairBackend::new(harnesses, extensions)),
+            Arc::new(NodeRepairBackend::new(harnesses, extensions, executor)?),
         )
     }
 
@@ -156,7 +157,11 @@ impl HostRuntime {
         let recovery = RecoveryService::open_with_store_configs(
             data_dir,
             config.recovery,
-            Arc::new(NodeRepairBackend::new(harnesses, extensions)),
+            Arc::new(NodeRepairBackend::new(
+                harnesses,
+                extensions,
+                config.executor,
+            )?),
             config.approval_store,
             config.knowledge_store,
         )?;

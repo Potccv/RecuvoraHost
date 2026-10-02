@@ -268,108 +268,83 @@ fn incident_observation_and_checkpoint_restore_atomically() {
     );
 }
 
-fn candidate() -> KnowledgeCandidate {
-    KnowledgeCandidate {
-        id: "candidate-a".into(),
-        incident_id: "incident-a".into(),
-        summary: "bounded action".into(),
+fn experience() -> RepairExperience {
+    RepairExperience {
+        id: "experience-a".into(),
+        operation_id: "operation-a".into(),
+        target_id: "target-a".into(),
+        conditions: std::collections::BTreeMap::from([("workload".into(), "a".into())]),
         keywords: vec!["repair".into()],
-        conditions: std::collections::BTreeMap::from([("platform".into(), "windows".into())]),
-        script: ScriptArtifact {
-            id: "script-a".into(),
+        outcome: RepairOutcome::Unknown,
+        evidence_refs: vec!["receipt-a".into()],
+        recorded_at_ms: 11,
+        actions: vec![RepairArtifact {
+            id: "action-a".into(),
             version: 1,
-            language: "powershell".into(),
-            platform: "windows".into(),
-            source: "bounded external action".into(),
-            preconditions: std::collections::BTreeMap::from([(
-                "platform".into(),
-                "windows".into(),
-            )]),
+            kind: "execute_script".into(),
+            payload: json!({"language":"python", "source":"bounded action"}),
+            preconditions: std::collections::BTreeMap::from([("workload".into(), "a".into())]),
             generated_by_harness: "harness-a".into(),
-            generated_in_session: "session-a".into(),
+            generated_in_session: "operation-a".into(),
+        }],
+        report: ExperienceReport {
+            summary: "uncertain action".into(),
+            lessons: "reconcile before another action".into(),
+            related_experience_ids: vec![],
+            scriptability: Scriptability::Undetermined {
+                reason: "unknown outcome".into(),
+            },
         },
-        reusable: true,
-        evidence_refs: vec!["observation-a".into()],
-        created_at_ms: 10,
     }
 }
 
 #[test]
-fn knowledge_replay_preserves_unknown_quarantine_and_case_idempotency() {
+fn knowledge_replay_preserves_unknown_quarantine_and_experience_idempotency() {
     let dir = TestDir::new("knowledge-restart");
     let path = dir.path.join("knowledge.jsonl");
     let mut store = KnowledgeStore::open(&path, KnowledgeStoreConfig::default()).unwrap();
-    store.upsert_candidate(candidate()).unwrap();
-    let case = RepairCase {
-        id: "case-a".into(),
-        operation_id: "operation-a".into(),
-        target_id: "target-a".into(),
-        script_id: "script-a".into(),
-        script_version: 1,
-        outcome: RepairOutcome::Unknown,
-        evidence_refs: vec!["receipt-a".into()],
-        recorded_at_ms: 11,
-    };
-    store
-        .record_outcome("candidate-a", case.clone(), None)
-        .unwrap();
+    store.record_experience(experience()).unwrap();
     drop(store);
     let mut restored = KnowledgeStore::open(path, KnowledgeStoreConfig::default()).unwrap();
-    assert!(restored.is_quarantined("script-a", 1));
-    let record = restored.record_outcome("candidate-a", case, None).unwrap();
-    assert_eq!(record.cases.len(), 1);
-    assert_eq!(record.status, KnowledgeStatus::Unknown);
+    assert!(restored.is_quarantined("action-a", 1));
+    restored.record_experience(experience()).unwrap();
+    assert_eq!(restored.snapshot().experiences.len(), 1);
+    assert_eq!(
+        restored.get("experience-a").unwrap().outcome,
+        RepairOutcome::Unknown
+    );
+    let mut conflicting = experience();
+    conflicting.report.summary = "changed historical evidence".into();
+    assert!(restored.record_experience(conflicting).is_err());
 }
 
 #[test]
-fn trusted_verification_replays_without_erasing_prior_unknown() {
+fn verified_experience_replays_without_erasing_prior_unknown() {
     let dir = TestDir::new("knowledge-verification");
     let path = dir.path.join("knowledge.jsonl");
     let mut store = KnowledgeStore::open(&path, KnowledgeStoreConfig::default()).unwrap();
-    store.upsert_candidate(candidate()).unwrap();
-    let mut case = RepairCase {
-        id: "case-unknown".into(),
-        operation_id: "operation-a".into(),
-        target_id: "target-a".into(),
-        script_id: "script-a".into(),
-        script_version: 1,
-        outcome: RepairOutcome::Unknown,
-        evidence_refs: vec!["receipt-unknown".into()],
-        recorded_at_ms: 11,
-    };
-    store
-        .record_outcome("candidate-a", case.clone(), None)
-        .unwrap();
-    case.id = "case-verified".into();
-    case.outcome = RepairOutcome::Verified;
-    case.recorded_at_ms = 12;
-    let proof = TrustedBusinessVerification::attest(
-        "operation-a",
-        "target-a",
-        "script-a",
-        1,
-        "independent-verifier",
-        vec!["business-evidence".into()],
-        12,
-    )
-    .unwrap();
-    store
-        .record_outcome("candidate-a", case, Some(proof))
-        .unwrap();
+    store.record_experience(experience()).unwrap();
+    let mut verified = experience();
+    verified.id = "experience-verified".into();
+    verified.outcome = RepairOutcome::Verified;
+    verified.recorded_at_ms = 12;
+    verified.evidence_refs = vec!["independent:business-evidence".into()];
+    store.record_experience(verified).unwrap();
     let expected = store.snapshot();
     drop(store);
     let restored = KnowledgeStore::open(path, KnowledgeStoreConfig::default()).unwrap();
     assert_eq!(restored.snapshot(), expected);
-    assert!(restored.is_quarantined("script-a", 1));
-    assert!(
+    assert!(restored.is_quarantined("action-a", 1));
+    assert_eq!(
         restored
-            .search_reusable(&KnowledgeQuery {
-                conditions: candidate().conditions,
+            .search_experiences(&KnowledgeQuery {
+                conditions: experience().conditions,
                 keywords: vec![],
-                limit: 10
+                limit: 10,
             })
             .unwrap()
-            .is_empty()
+            .len(),
+        2
     );
 }
 
@@ -406,51 +381,30 @@ fn capacity_expansion_replays_from_original_configuration_and_keeps_quarantine()
     let path = dir.path.join("knowledge.jsonl");
     let original = KnowledgeStoreConfig {
         max_records: 1,
-        max_cases_per_record: 1,
         ..KnowledgeStoreConfig::default()
     };
     let mut store = KnowledgeStore::open(&path, original.clone()).unwrap();
-    store.upsert_candidate(candidate()).unwrap();
-    store
-        .record_outcome(
-            "candidate-a",
-            RepairCase {
-                id: "case-a".into(),
-                operation_id: "operation-a".into(),
-                target_id: "target-a".into(),
-                script_id: "script-a".into(),
-                script_version: 1,
-                outcome: RepairOutcome::Unknown,
-                evidence_refs: vec!["receipt:unknown".into()],
-                recorded_at_ms: 11,
-            },
-            None,
-        )
-        .unwrap();
+    store.record_experience(experience()).unwrap();
     let before = store.snapshot();
-    let expanded = KnowledgeConfig {
-        max_records: 2,
-        max_cases_per_record: 2,
-    };
+    let expanded = KnowledgeConfig { max_records: 2 };
     store
         .expand_capacity(before.config.clone(), expanded.clone())
         .unwrap();
-    assert_eq!(store.snapshot().records, before.records);
+    assert_eq!(store.snapshot().experiences, before.experiences);
     assert!(
         store
             .expand_capacity(before.config.clone(), expanded.clone())
             .is_err(),
         "stale configuration is not another expansion"
     );
-    assert!(store.is_quarantined("script-a", 1));
-    let mut another = candidate();
-    another.id = "candidate-b".into();
-    store.upsert_candidate(another).unwrap();
+    assert!(store.is_quarantined("action-a", 1));
+    let mut another = experience();
+    another.id = "experience-b".into();
+    store.record_experience(another).unwrap();
     let expected = store.snapshot();
     drop(store);
     let changed_header = KnowledgeStoreConfig {
         max_records: 2,
-        max_cases_per_record: 2,
         ..original.clone()
     };
     assert!(
@@ -460,5 +414,5 @@ fn capacity_expansion_replays_from_original_configuration_and_keeps_quarantine()
     let restored = KnowledgeStore::open(path, original).unwrap();
     assert_eq!(restored.snapshot(), expected);
     assert_eq!(restored.snapshot().config, expanded);
-    assert!(restored.is_quarantined("script-a", 1));
+    assert!(restored.is_quarantined("action-a", 1));
 }

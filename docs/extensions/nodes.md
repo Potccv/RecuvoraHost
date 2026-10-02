@@ -62,37 +62,26 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
 
 `execute_script` 的 outcome 为 `executed/failed/unknown`；`reconcile` 另允许 `not_executed`。这些是业务结果，位于 result 载荷中，与 wire Error 的 `rejected/unknown/cancelled` 不同。执行成功不等于业务健康，verify 必须独立取得证据。不能证明停止时不得填 `executor_stopped: true`。
 
-`operation` 的完整结构如下；字段值为形状示例，不构成任何执行授权：
+`operation` 保留 task_id、task_revision、operation_id、target；`action` 包含 kind 为 `execute_script`、executor_id、script、verification_profile、required_facts、timeout_secs 和必填的 repair_authorization。`repair_authorization` 是完整已审批 Harness 会话操作，其 action.kind 为 `repair_with_harness`，action.request 保存故障、观察、相关经验、目标和可信委托；外层与内层 operation_id 必须相同。节点必须保留整个授权对象，不能把具体脚本当作一份独立的新授权。
+
+`operation.action.script` 的形状如下；内容仅为示例，不构成执行授权：
 
 ```json
 {
-  "task_id": "task-1",
-  "task_revision": 1,
-  "operation_id": "operation-1",
-  "target": "target-1",
-  "action": {
-    "kind": "execute_script",
-    "executor_id": "executor-node",
-    "script": {
-      "id": "script-1",
-      "version": 1,
-      "language": "python",
-      "platform": "linux",
-      "source": "print('example')",
-      "preconditions": {"workload_version": "1"},
-      "generated_by_harness": "assistant",
-      "generated_in_session": "session-1"
-    },
-    "verification_profile": "workload-health",
-    "required_facts": {"workload_version": "1"},
-    "timeout_secs": 30,
-    "incident_id": "incident-1",
-    "incident_revision": 1
-  }
+  "id": "operation-1-action",
+  "version": 1,
+  "language": "python",
+  "platform": "linux",
+  "source": "print('example')",
+  "preconditions": {"workload_version": "1"},
+  "generated_by_harness": "assistant",
+  "generated_in_session": "operation-1"
 }
 ```
 
-脚本文本最多 32 KiB。节点必须验证目标、执行器、语言、平台、前置条件和自身执行范围，完整保留 operation 身份及不可变脚本版本；Host/Core 不提供节点进程沙箱。执行回执 summary 最多 8192 字节。无效或丢失回执保持 Unknown；同一操作不能因调用重试重新执行。结果核实从原节点查询原操作记录，再独立 verify，不重放脚本；`check_result` 是 Host 管理 API 名称，节点 wire 方法是 `reconcile`。
+这个脚本结构属于 Host 到节点的业务协议。Host 将 language、platform、source 封装进中立 `RepairArtifact.payload`，kind 为 `execute_script`，其余身份、前提和来源保持不变后交给 Core。Core 不解释脚本语言或平台；节点仍须执行自身的格式、执行器能力和沙箱校验。
+
+脚本文本最多 32 KiB；封装后的中立 JSON payload 也须不超过 32 KiB，因此实际允许的文本长度还受 JSON 转义及字段开销限制。节点必须验证目标、执行器、语言、平台、前置条件和自身执行范围，完整保留 operation 身份及不可变脚本版本；Host/Core 不提供节点进程沙箱。执行回执 summary 最多 8192 字节。无效或丢失回执保持 Unknown；同一操作不能因调用重试重新执行。结果核实从原节点查询原操作记录，再独立 verify，不重放脚本；`check_result` 是 Host 管理 API 名称，节点 wire 方法是 `reconcile`。
 
 ## 自定义插件与只读观察
 
@@ -121,6 +110,6 @@ cursor 回显请求游标，初次为 null；generation 表示来源代次，seq
 
 ## Harness 修复会话的动作绑定
 
-Host 可在显式 `repair_with_harness` 委托下，通过 Harness 的 `apply_repair` 工具调用已有 `recuvora.repair` v1 `execute_script` 方法。请求仍包含 `request_id` 与完整 `operation`；动作的 `kind` 为 `execute_script`，新增 `action.repair_authorization` 保存完整已审批会话操作，外层 operation_id 与会话相同。Host 在发送前持久保存具体脚本，最多派发一次；节点仍按 operation_id 幂等并提供独立 reconcile/verify，不从 Harness 文本判断恢复。节点必须在自身目标沙箱内校验请求，未知附加业务字段不应被解释为扩大权限。
+Host 可在显式 `repair_with_harness` 委托下，通过 Harness 的 `apply_repair` 工具调用已有 `recuvora.repair` v1 `execute_script` 方法。请求仍包含 `request_id` 与完整 `operation`；动作的 `kind` 为 `execute_script`，必填 `action.repair_authorization` 保存完整已审批会话操作，外层 operation_id 与会话相同。Host 在发送前持久保存具体脚本，最多派发一次；节点仍按 operation_id 幂等并提供独立 reconcile/verify，不从 Harness 文本判断恢复。节点必须在自身目标沙箱内校验请求，未知附加业务字段不应被解释为扩大权限。
 
-总结使用现有 Harness `run` 方法和无工具会话，结果由 Host 解析，不新增节点方法。脚本候选与本次已执行动作分别记录，候选不能凭模型评估被标记为通过验收。
+总结使用 Harness `run` 方法和无工具会话，由独立 summary_timeout_secs 限时，结果由 Host 解析，不新增节点方法。脚本候选与实际动作都转换为中立产物，分别保存在 RepairExperience.report.scriptability 与 actions。候选不能凭模型评估或本次业务成功被标记为通过验收；失败和 Unknown 实际动作版本永久隔离。

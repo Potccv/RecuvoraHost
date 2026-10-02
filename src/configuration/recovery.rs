@@ -1,4 +1,4 @@
-//! Host storage and scheduling settings around the unchanged Core contract.
+//! Host storage and scheduling settings around the Core domain contract.
 use crate::integrations::recovery::IncidentTrigger;
 use crate::integrations::recovery::{CanonicalTarget, RecoveryConfig, RecoveryError};
 use crate::persistence::approval::ApprovalStoreConfig;
@@ -15,6 +15,7 @@ pub struct RecoveryHostConfig {
     /// Stable shared authority for every recovery store protecting this target.
     pub ownership_dir: PathBuf,
     pub recovery: RecoveryConfig,
+    pub executor: crate::integrations::recovery::ScriptExecutorConfig,
     pub triggers: Vec<IncidentTrigger>,
     pub interval_ms: u64,
     #[serde(default)]
@@ -26,12 +27,18 @@ pub struct RecoveryHostConfig {
 impl RecoveryHostConfig {
     pub fn validate(&self) -> Result<(), RecoveryError> {
         self.recovery.validate()?;
+        self.executor.validate()?;
+        if self.recovery.target.allowed_action_kinds != ["execute_script"] {
+            return Err(RecoveryError::Invalid(
+                "the configured Host adapter only supports execute_script".into(),
+            ));
+        }
         CanonicalTarget::new(self.recovery.target.target_id.clone())?;
         self.approval_store.validate()?;
         self.knowledge_store
             .validate()
             .map_err(|e| RecoveryError::Invalid(e.to_string()))?;
-        if self.schema_version != 1
+        if self.schema_version != 2
             || !(10..=3_600_000).contains(&self.interval_ms)
             || self.triggers.is_empty()
             || self.triggers.len() > 64

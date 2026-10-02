@@ -65,9 +65,9 @@ decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revi
 
 人工决定与 resume 在成功保存到磁盘后返回记录，auto_retry:false。决定自身不执行动作；已启用的恢复流程调度器在后续轮次继续处理获准任务。resume 仅恢复 paused（暂停）任务；Unknown（未知执行结果）必须先核实。check_result 先保存稳定 operation_id，返回 202，再从绑定节点分别获取原执行状态和业务验收。客户端用 `/operations/{id}` 读取结果，任何回执未知都不自动重复 POST。节点不支持只读 reconcile 或证据不兼容时，不重复执行脚本。
 
-修复经验搜索是只读 POST，不创建 operation。conditions 为 1–32 项准确条件，keywords 最多 32 项，limit 为 1–100；匹配规则由 Core KnowledgeQuery 决定。结果仅包含适用、已验证且脚本版本未被隔离的 KnowledgeRecord，保留候选、状态、脚本及案例，不能据此取得执行权限。核实未知执行结果不会自动解除脚本版本隔离。
+修复经验搜索是只读 POST，不创建 operation。conditions 为 1–32 项准确条件，keywords 最多 32 项，limit 为 1–100；匹配规则由 Core KnowledgeQuery 决定。经验记录只通过 `experiences` 数组返回，元素为完整 `RepairExperience`，包含结果、证据、实际 `actions` 和总结报告。失败和 Unknown 仍作为明确标记的负面参考返回；按记录时间降序、ID 升序排序后应用 limit。实际动作版本隔离不会删除负面经验，结果核实也不会解除永久隔离。候选和经验均不授予执行权限。
 
-恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 保留旧文本修复兼容视图，不混入新恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
+恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 提供独立文本修复视图，不混入新恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
 
 ## 接受、结果与重复请求
 
@@ -81,7 +81,7 @@ HTTP应用日志与Core审批/故障记录分别承担传输接收和业务判�
 
 摘要默认每页25条，limit允许1至100，游标按不可变ID降序继续。初始化历史只读首批，不含完整规则、文件全文、完整模型回复或获准动作，不能据摘要批准。审批待处理队列独立于已结束历史，全局计数来自服务统计，不按当前页长度推断。
 
-人工决定、执行及未知执行结果核实在审批存储服务的同步锁内核验 revision，冲突返回409，客户端必须重新读取完整详情。旧文本流程批准仅记录决定，apply 显式执行；自动恢复流程由显式启用的恢复流程调度器在批准后继续调度。check_result 查询证据并保存核实结果，不重做动作。Unknown目标阻断冲突执行，参数或UI状态不能绕过规则。
+人工决定、执行及未知执行结果核实在审批存储服务的同步锁内核验 revision，冲突返回409，客户端必须重新读取完整详情。独立文本流程批准仅记录决定，apply 显式执行；自动恢复流程由显式启用的恢复流程调度器在批准后继续调度。check_result 查询证据并保存核实结果，不重做动作。Unknown目标阻断冲突执行，参数或UI状态不能绕过规则。
 
 故障确认独立返回保存在磁盘上的记录，不创建通用执行operation。acknowledged只表示已知悉，resolved只表示异常条件解除，二者都不授权修复或证明业务恢复。确认须携带当前revision，actor由服务绑定，未知回执不可自动重复POST。
 
@@ -105,4 +105,4 @@ log_sources由可信配置限定提供方、方法、monitor_contract、固定�
 
 `GET /api/v1/recovery/tasks/{id}` 在原 `task` 之外返回 `experience_jobs`，仅列出该任务未交付的经验工作：`id`、`attempt`、`pending`、`summarized`、`last_error`。读取仍要求 `recovery.read`；这些字段不授予重执行权限。
 
-`POST /api/v1/recovery/knowledge/search` 继续要求 `knowledge.read`，原 `items` 返回兼容脚本案例，新增 `experiences` 返回精确匹配的独立修复经验。每组都受请求 `limit` 限制；经验可以没有脚本，也可以是明确标记的失败或 Unknown 发现。候选脚本不是已验证方案，不产生执行许可。HTTP 不接受客户端上传结果、脚本化结论或成功断言；总结失败的额外重试目前由可信 Rust 接口提供。
+`POST /api/v1/recovery/knowledge/search` 要求 `knowledge.read`，响应为 `{ "experiences": [...], "limit": 请求限额, "auto_retry": false }`，不提供 `items` 或脚本案例兼容字段。经验可以没有动作；`actions` 中的产物和报告中可选候选采用中立 `RepairArtifact`，具体脚本格式由 Host executor 解释。HTTP 不接受客户端上传结果、脚本化结论或成功断言；总结失败的额外重试目前由可信 Rust 接口提供。

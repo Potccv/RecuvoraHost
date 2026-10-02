@@ -77,13 +77,7 @@ path = "tests/protocol.rs"
 name = "persistence"
 path = "tests/persistence.rs"
 
-[[test]]
-name = "legacy_import"
-path = "tests/legacy_import.rs"
 
-[[test]]
-name = "legacy_bundle"
-path = "tests/legacy_bundle.rs"
 
 [[test]]
 name = "server_logs"

@@ -2,7 +2,6 @@ use super::*;
 use crate::integrations::recovery::*;
 use crate::runtime::operation::Cancellation;
 use recuvora_core::recovery::approval::ReviewerConfig;
-use recuvora_core::recovery::knowledge::ScriptArtifact;
 
 struct PendingBackend;
 impl IncidentGuard for PendingBackend {
@@ -36,32 +35,14 @@ impl RepairBackend for PendingBackend {
             })
         })
     }
-    fn diagnose(&self, input: DiagnosisInput, _: Cancellation) -> RecoveryFuture<'_, RepairPlan> {
-        Box::pin(async move {
-            Ok(RepairPlan {
-                summary: "bounded fixture plan".into(),
-                reusable: true,
-                script: ScriptArtifact {
-                    id: "script-fixture".into(),
-                    version: 1,
-                    language: "powershell".into(),
-                    platform: "windows".into(),
-                    source: "Write-Output 'fixture'".into(),
-                    preconditions: input.config.target.required_facts,
-                    generated_by_harness: input.config.execution_harness,
-                    generated_in_session: "diagnosis-fixture".into(),
-                },
-            })
-        })
-    }
     fn review(&self, _: ReviewInput, _: Cancellation) -> RecoveryFuture<'_, ReviewOutput> {
         Box::pin(async { panic!("human review must not call a Harness") })
     }
     fn execute<'a>(
         &'a self,
-        _: AuthorizedScript<'a>,
+        _: AuthorizedRepair<'a>,
         _: Cancellation,
-    ) -> RecoveryFuture<'a, ScriptReceipt> {
+    ) -> RecoveryFuture<'a, RepairReceipt> {
         Box::pin(async { panic!("HTTP decisions must not dispatch") })
     }
     fn verify(
@@ -217,10 +198,7 @@ async fn recovery_http_uses_core_records_revisions_and_authenticated_actor() {
         detail["task"]["problem"],
         serde_json::to_value(&task.problem).unwrap()
     );
-    assert_eq!(
-        detail["task"]["plan"],
-        serde_json::to_value(&task.plan).unwrap()
-    );
+    assert!(detail["task"].get("plan").is_none());
     assert_eq!(
         detail["task"]["operation"],
         serde_json::to_value(&task.operation).unwrap()
@@ -311,7 +289,7 @@ async fn recovery_http_uses_core_records_revisions_and_authenticated_actor() {
             &query
         )
         .await
-        .1["items"],
+        .1["experiences"],
         json!([])
     );
     server.abort();

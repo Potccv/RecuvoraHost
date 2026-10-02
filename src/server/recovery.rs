@@ -163,7 +163,11 @@ pub(super) async fn check_result(
             .extensions
             .clone()
             .ok_or_else(|| ApiError::unavailable("extension service unavailable"))?,
-    );
+        state
+            .recovery_executor
+            .clone()
+            .ok_or_else(|| ApiError::unavailable("recovery executor unavailable"))?,
+    )?;
     let cancellation = state.begin(
         input.operation_id.clone(),
         "recovery_check_result",
@@ -234,9 +238,8 @@ pub(super) async fn knowledge(
         limit: input.limit,
     };
     let recovery = service(&state)?;
-    let records = recovery.knowledge(&query)?;
     let experiences = recovery.experiences(&query)?;
     Ok(Json(
-        json!({"items":records,"experiences":experiences,"limit":input.limit,"auto_retry":false}),
+        json!({"experiences":experiences,"limit":input.limit,"auto_retry":false}),
     ))
 }

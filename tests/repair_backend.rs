@@ -29,6 +29,7 @@ fn main() -> TestResult {
         .build()?;
     for mode in [
         "unified",
+        "unified-candidate",
         "unified-summary-failure",
         "unified-lost-receipt",
         "unified-backend-error",
@@ -39,6 +40,9 @@ fn main() -> TestResult {
     for mode in ["good", "lost-receipt"] {
         runtime.block_on(Box::pin(managed_http(mode)))?;
     }
+    runtime.block_on(Box::pin(
+        restarting_cannot_expand_or_change_the_approved_executor_scope(),
+    ))?;
     runtime.block_on(Box::pin(run()))
 }
 
@@ -89,15 +93,6 @@ fn now_ms() -> u64 {
 fn current_facts() -> BTreeMap<String, String> {
     BTreeMap::from([("release".into(), "v1".into())])
 }
-fn observation() -> TargetObservation {
-    TargetObservation {
-        target_id: "target".into(),
-        facts: current_facts(),
-        evidence_refs: vec!["observation:fixture".into()],
-        observed_at_ms: now_ms(),
-    }
-}
-
 fn verification_input(target: TargetBinding) -> VerificationInput {
     VerificationInput {
         target,
@@ -108,11 +103,11 @@ fn verification_input(target: TargetBinding) -> VerificationInput {
             target: "target".into(),
             action: json!({"kind":"execute_script"}),
         },
-        receipt: ScriptReceipt {
+        receipt: RepairReceipt {
             execution_trace: Vec::new(),
             operation_id: "operation-fixture".into(),
             target_id: "target".into(),
-            outcome: ScriptOutcome::Executed,
+            outcome: RepairExecutionOutcome::Executed,
             executor_stopped: true,
             evidence_refs: vec!["execution:fixture".into()],
             summary: "fixture result".into(),
@@ -130,29 +125,24 @@ fn config() -> RecoveryConfig {
             "Repair only the explicitly bound target after inspecting the approved environment."
                 .into(),
         allowed_targets: vec!["target".into()],
-        allowed_action_kinds: vec!["execute_script".into()],
+        allowed_action_kinds: vec!["repair_with_harness".into()],
         ttl_secs: 300,
     };
     RecoveryConfig {
-        schema_version: 1,
+        schema_version: 2,
         execution_harness: "remote".into(),
         target: TargetBinding {
             target_id: "target".into(),
             executor_id: "fixture-node".into(),
-            platform: "windows".into(),
-            allowed_languages: vec!["powershell".into()],
-            diagnostic_queries: vec!["snapshot".into()],
+            allowed_action_kinds: vec!["execute_script".into()],
             verification_profile: "health".into(),
             required_facts: current_facts(),
             action_timeout_secs: 10,
         },
         approval: policy.clone(),
-        script_approval: policy,
-        diagnosis_timeout_secs: 10,
+        summary_timeout_secs: 10,
         review_timeout_secs: 10,
         max_tool_calls: 1,
-        max_diagnoses: 2,
-        minimum_script_occurrences: 2,
         max_tasks: 10,
     }
 }
@@ -169,27 +159,11 @@ fn problem() -> ProblemContext {
         evidence_refs: vec!["incident:fixture".into()],
     }
 }
-fn task() -> RecoveryTask {
-    RecoveryTask {
-        id: "task-fixture".into(),
-        revision: 1,
-        problem: problem(),
-        episode_count: 1,
-        stage: RecoveryStage::Diagnosing,
-        diagnosis_attempts: 1,
-        diagnosis_call: None,
-        plan: None,
-        knowledge_id: None,
-        reused_script: false,
-        approval_id: None,
-        operation: None,
-        observation: None,
-        receipt: None,
-        verification: None,
-        result_check: None,
-        note: None,
-        created_at_ms: now_ms(),
-        updated_at_ms: now_ms(),
+fn executor_config() -> ScriptExecutorConfig {
+    ScriptExecutorConfig {
+        platform: "windows".into(),
+        allowed_languages: vec!["powershell".into()],
+        diagnostic_queries: vec!["snapshot".into()],
     }
 }
 
@@ -252,7 +226,8 @@ async fn backend(
         Arc::new(NodeRepairBackend::new(
             harnesses.clone(),
             extensions.clone(),
-        )),
+            executor_config(),
+        )?),
         harnesses,
         extensions,
         server,
@@ -292,21 +267,6 @@ async fn run() -> TestResult {
     let config = config();
     let observed = adapter.inspect(&config.target, Cancellation::new()).await?;
     assert_eq!(observed.target_id, "target");
-    let plan = adapter
-        .diagnose(
-            DiagnosisInput {
-                task: task(),
-                config: config.clone(),
-                observation: observed,
-                knowledge: vec![],
-            },
-            Cancellation::new(),
-        )
-        .await?;
-    assert_eq!(plan.script.generated_by_harness, "remote");
-    assert_eq!(plan.script.generated_in_session, "execution-session");
-    assert_eq!(plan.script.id, "task-fixture-script-1");
-    assert_eq!(plan.script.preconditions, current_facts());
     assert!(
         extensions
             .call_read_only(
@@ -346,7 +306,7 @@ async fn run() -> TestResult {
     );
     assert_eq!(
         recovery_task.receipt.as_ref().unwrap().outcome,
-        ScriptOutcome::Executed
+        RepairExecutionOutcome::Executed
     );
     assert_eq!(
         recovery_task.verification.as_ref().unwrap().healthy,
@@ -357,7 +317,7 @@ async fn run() -> TestResult {
     conditions.insert("platform".into(), "windows".into());
     assert_eq!(
         recovery
-            .knowledge(&KnowledgeQuery {
+            .experiences(&KnowledgeQuery {
                 conditions,
                 keywords: vec!["failure".into()],
                 limit: 5
@@ -471,20 +431,21 @@ async fn run() -> TestResult {
         "forged-draft",
     ] {
         let (bad, harnesses, extensions, server) = backend(mode).await?;
-        assert!(
-            bad.diagnose(
-                DiagnosisInput {
-                    task: task(),
-                    config: config.clone(),
-                    observation: observation(),
-                    knowledge: vec![],
-                },
-                Cancellation::new()
-            )
-            .await
-            .is_err(),
-            "reject {mode}"
-        );
+        let dir = TestDir::new()?;
+        let mut settings = config.clone();
+        if mode == "budget" {
+            settings.max_tool_calls = 1;
+        }
+        let recovery = RecoveryService::open(dir.path.join("invalid-tool"), settings, bad)?;
+        recovery.bind_target_ownership(Arc::new(FileTargetOwnership::open(
+            dir.path.join("ownership"),
+        )?))?;
+        recovery.bind_incident_guard(Arc::new(FixtureIncidentGuard))?;
+        let task = recovery.submit(problem())?;
+        let task = recovery.advance(&task.id, Cancellation::new()).await?;
+        assert_eq!(task.stage, RecoveryStage::Failed, "reject {mode}");
+        assert!(task.receipt.unwrap().execution_trace.is_empty());
+        recovery.shutdown().await?;
         harnesses.shutdown().await?;
         extensions.shutdown().await?;
         server.shutdown()?;
@@ -637,7 +598,8 @@ async fn managed_http(mode: &str) -> TestResult {
     let mut core = config();
     core.approval.reviewer = ReviewerConfig::Human;
     let settings = RecoveryHostConfig {
-        schema_version: 1,
+        schema_version: 2,
+        executor: executor_config(),
         data_dir: dir.path.join("recovery-state"),
         ownership_dir: dir.path.join("target-ownership"),
         recovery: core,
@@ -755,15 +717,23 @@ async fn managed_http(mode: &str) -> TestResult {
         );
         assert!(operation["result"]["task"].get("reconciliation").is_none());
     }
-    let knowledge: Value = client.post(format!("{url}/api/v1/recovery/knowledge/search")).bearer_auth(token).json(&json!({"conditions":{"release":"v1","platform":"windows","fault_fingerprint":"workload-failure"},"keywords":["failure"],"limit":5})).send().await?.error_for_status()?.json().await?;
-    assert_eq!(
-        knowledge["items"]
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let knowledge: Value = client.post(format!("{url}/api/v1/recovery/knowledge/search")).bearer_auth(token).json(&json!({"conditions":{"release":"v1","fault_fingerprint":"workload-failure"},"keywords":["failure"],"limit":5})).send().await?.error_for_status()?.json().await?;
+        assert!(knowledge.get("items").is_none());
+        if !knowledge["experiences"]
             .as_array()
-            .ok_or("knowledge items required")?
-            .len(),
-        if mode == "lost-receipt" { 0 } else { 1 },
-        "Core quarantines immutable script versions after an Unknown outcome"
-    );
+            .ok_or("experiences required")?
+            .is_empty()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "experience delivery timed out: {knowledge}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     server.abort();
     let _ = server.await;
     console.shutdown().await?;
@@ -979,20 +949,17 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                     .ok_or("missing exact review context")?
                     .1,
             )?;
-            if mode.starts_with("unified") {
-                assert_eq!(
-                    context["request"]["operation"]["action"]["kind"],
-                    "repair_with_harness"
-                );
-            } else {
-                assert_eq!(
-                    context["request"]["operation"]["action"]["script"]["source"],
-                    "exit 0"
-                );
-            }
+            assert_eq!(
+                context["request"]["operation"]["action"]["kind"],
+                "repair_with_harness"
+            );
             assert_eq!(context["current_observation"]["facts"]["release"], "v1");
+            assert_eq!(
+                context["executor_scope"],
+                serde_json::to_value(executor_config())?
+            );
             json!({"request_id":context["request"]["request_id"],"decision":"approve","reason":"exact fixture scope reviewed"}).to_string()
-        } else if mode.starts_with("unified") {
+        } else {
             let tools = params["tools"].as_array().ok_or("missing tools")?;
             if tools.is_empty() {
                 assert!(
@@ -1003,6 +970,8 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                 );
                 if mode == "unified-summary-failure" {
                     "invalid report".into()
+                } else if mode == "unified-candidate" {
+                    json!({"summary":"Repair observation", "lessons":"Check release before applying", "related_experience_ids":[], "assessment":"possible", "reason":"Bounded repeatable repair", "script":{"language":"powershell","source":"Write-Output candidate", "preconditions":{"release":"v1"}}}).to_string()
                 } else {
                     json!({"summary":"Repair observation", "lessons":"Interactive repair requires current context", "related_experience_ids":[], "assessment":"not_suitable", "reason":"Context dependent", "script":null}).to_string()
                 }
@@ -1018,64 +987,61 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                         .1,
                 )?;
                 assert_eq!(request["summarize_experience"], true);
-                for index in 0..2 {
-                    session.write(Message::Callback { id: format!("repair-callback-{index}"), parent_id: id.clone(), method: "tool".into(),
+                if matches!(
+                    mode,
+                    "budget"
+                        | "bad-query"
+                        | "wrong-target-argument"
+                        | "wrong-harness"
+                        | "forged-draft"
+                ) {
+                    for index in 0..if mode == "budget" { 2 } else { 1 } {
+                        let arguments = match mode {
+                            "bad-query" => json!({"query":"unapproved"}),
+                            "wrong-target-argument" => {
+                                json!({"query":"snapshot","target_id":"other"})
+                            }
+                            "forged-draft" => {
+                                json!({"language":"powershell","source":"exit 0","preconditions":{"release":"v1"},"generated_by_harness":"forged"})
+                            }
+                            _ => json!({"query":"snapshot"}),
+                        };
+                        session.write(Message::Callback { id: format!("bad-{index}"), parent_id:id.clone(), method:"tool".into(), params:json!({"harness_id":if mode=="wrong-harness" {"forged"} else {"remote"},"thread_id":"execution-thread","turn_id":"turn-1","call_id":format!("bad-call-{index}"),"tool":if mode=="forged-draft" {"apply_repair"} else {"inspect_target"},"arguments":arguments}) })?;
+                        match session.read()? {
+                            Some(Message::Result { result, .. }) => {
+                                assert_eq!(result["success"], json!(mode == "budget" && index == 0))
+                            }
+                            Some(Message::Error { .. }) | Some(Message::Cancel { .. }) | None => {
+                                return Ok(());
+                            }
+                            _ => return Err("unexpected callback response".into()),
+                        }
+                    }
+                } else {
+                    for index in 0..2 {
+                        session.write(Message::Callback { id: format!("repair-callback-{index}"), parent_id: id.clone(), method: "tool".into(),
                         params: json!({"harness_id":"remote", "thread_id":"execution-thread", "turn_id":"turn-1", "call_id":format!("repair-call-{index}"), "tool":"apply_repair", "arguments":{"language":"powershell","source":"exit 0","preconditions":{"release":"v1"}}}) })?;
-                    match session.read()? {
-                        Some(Message::Result { result, .. }) => assert_eq!(
-                            result["success"],
-                            json!(index == 0 && mode != "unified-lost-receipt"),
-                            "{result}"
-                        ),
-                        _ => return Err("missing repair tool result".into()),
+                        match session.read()? {
+                            Some(Message::Result { result, .. }) => assert_eq!(
+                                result["success"],
+                                json!(
+                                    index == 0
+                                        && !matches!(
+                                            mode,
+                                            "unified-lost-receipt"
+                                                | "lost-receipt"
+                                                | "wrong-result-check"
+                                                | "unknown-result-check"
+                                        )
+                                ),
+                                "{result}"
+                            ),
+                            _ => return Err("missing repair tool result".into()),
+                        }
                     }
                 }
                 "Model claims success, but Host must use the independent executor receipt".into()
             }
-        } else {
-            assert_eq!(params["workspace"]["workspace_id"], "work");
-            let tools = params["tools"].as_array().ok_or("missing tools")?;
-            assert_eq!(tools.len(), 1);
-            assert_eq!(tools[0]["name"], "inspect_target");
-            for index in 0..if mode == "budget" { 2 } else { 1 } {
-                let arguments = match mode {
-                    "bad-query" => json!({"query":"unapproved"}),
-                    "wrong-target-argument" => json!({"query":"snapshot","target_id":"other"}),
-                    _ => json!({"query":"snapshot"}),
-                };
-                session.write(
-                    Message::Callback {
-                        id: format!("callback-{index}"),
-                        parent_id: id.clone(),
-                        method: "tool".into(),
-                        params: json!({
-                            "harness_id":if mode=="wrong-harness" {"forged"} else {"remote"},"thread_id":"execution-thread","turn_id":"turn-1","call_id":format!("call-{index}"),
-                            "tool":"inspect_target","arguments":arguments,
-                        }),
-                    },
-                )?;
-                match session.read()? {
-                    Some(Message::Result { result, .. }) => assert_eq!(
-                        result["success"],
-                        json!(
-                            index == 0
-                                && !matches!(
-                                    mode,
-                                    "bad-query" | "wrong-target-argument" | "wrong-harness"
-                                )
-                        )
-                    ),
-                    Some(Message::Error { .. }) | Some(Message::Cancel { .. }) | None => {
-                        return Ok(());
-                    }
-                    _ => return Err("unexpected callback response".into()),
-                }
-            }
-            let mut draft = json!({"summary":"Repair fixture workload","language":"powershell","source":"exit 0","preconditions":{"release":"v1"},"reusable":true});
-            if mode == "forged-draft" {
-                draft["generated_by_harness"] = json!("forged");
-            }
-            draft.to_string()
         };
         json!({"thread_id":if approval {"review-thread"} else {"execution-thread"},"session_id":if approval {"review-session"} else {"execution-session"},
             "project_directory":"C:\\FixtureOnly\\Workspace","visibility":params["visibility"],"native_project_id":null,"client_project_grouping":{"type":"not_applicable"},"final_response":final_response})
@@ -1091,6 +1057,10 @@ struct PostExecutionFault {
     invalid_trace: bool,
 }
 impl RepairBackend for PostExecutionFault {
+    fn persistence_binding(&self) -> Value {
+        self.inner.persistence_binding()
+    }
+
     fn inspect<'a>(
         &'a self,
         target: &'a TargetBinding,
@@ -1098,21 +1068,14 @@ impl RepairBackend for PostExecutionFault {
     ) -> RecoveryFuture<'a, TargetObservation> {
         self.inner.inspect(target, cancel)
     }
-    fn diagnose(
-        &self,
-        input: DiagnosisInput,
-        cancel: Cancellation,
-    ) -> RecoveryFuture<'_, RepairPlan> {
-        self.inner.diagnose(input, cancel)
-    }
     fn review(&self, input: ReviewInput, cancel: Cancellation) -> RecoveryFuture<'_, ReviewOutput> {
         self.inner.review(input, cancel)
     }
     fn execute<'a>(
         &'a self,
-        script: AuthorizedScript<'a>,
+        script: AuthorizedRepair<'a>,
         cancel: Cancellation,
-    ) -> RecoveryFuture<'a, ScriptReceipt> {
+    ) -> RecoveryFuture<'a, RepairReceipt> {
         Box::pin(async move {
             let mut receipt = self.inner.execute(script, cancel).await?;
             if self.invalid_trace {
@@ -1166,7 +1129,10 @@ async fn unified_repair(mode: &str) -> TestResult {
     let task = recovery.submit(problem())?;
 
     let mut task = recovery.advance(&task.id, Cancellation::new()).await?;
-    assert!(task.plan.is_none());
+    assert_eq!(
+        task.operation.as_ref().unwrap().action["kind"],
+        "repair_with_harness"
+    );
 
     if matches!(
         mode,
@@ -1218,7 +1184,28 @@ async fn unified_repair(mode: &str) -> TestResult {
             limit: 4,
         };
         assert!(!recovery.experiences(&query)?.is_empty());
-        assert!(recovery.knowledge(&query)?.is_empty());
+        for item in recovery.experiences(&query)? {
+            if mode == "unified-candidate" {
+                let recuvora_core::recovery::knowledge::Scriptability::Possible {
+                    candidate: Some(candidate),
+                    ..
+                } = item.report.scriptability
+                else {
+                    panic!("validated summary candidate missing");
+                };
+                assert_eq!(candidate.kind, "execute_script");
+                assert_eq!(candidate.payload["language"], "powershell");
+                assert_ne!(candidate.id, item.actions[0].id);
+                assert_ne!(candidate.generated_in_session, item.operation_id);
+                assert!(!candidate.generated_in_session.is_empty());
+                assert_eq!(item.actions.len(), 1);
+            } else {
+                assert!(matches!(
+                    item.report.scriptability,
+                    recuvora_core::recovery::knowledge::Scriptability::NotSuitable { .. }
+                ));
+            }
+        }
         let mut next = problem();
         next.incident_id = "next-unified-incident".into();
 
@@ -1246,6 +1233,72 @@ async fn unified_repair(mode: &str) -> TestResult {
 
         recovery.shutdown().await?;
     }
+    harnesses.shutdown().await?;
+    extensions.shutdown().await?;
+    server.shutdown()?;
+    Ok(())
+}
+
+async fn restarting_cannot_expand_or_change_the_approved_executor_scope() -> TestResult {
+    let (adapter, harnesses, extensions, server) = backend("unified").await?;
+    let dir = TestDir::new()?;
+    let path = dir.path.join("bound-executor");
+    let mut settings = config();
+    settings.approval.reviewer = ReviewerConfig::Human;
+    let recovery = RecoveryService::open(&path, settings.clone(), adapter.clone())?;
+    recovery.bind_target_ownership(Arc::new(FileTargetOwnership::open(
+        dir.path.join("ownership"),
+    )?))?;
+    recovery.bind_incident_guard(Arc::new(FixtureIncidentGuard))?;
+    let task = recovery.submit(problem())?;
+    let task = recovery.advance(&task.id, Cancellation::new()).await?;
+    assert_eq!(task.stage, RecoveryStage::AwaitingApproval);
+    let approval = recovery.approval(&task.id)?.unwrap();
+    recovery.decide_human(
+        &task.id,
+        approval.revision,
+        recuvora_core::recovery::approval::ApprovalDecision::Approve,
+        "operator".into(),
+        "original executor scope only".into(),
+    )?;
+    let original_operation = task.operation.clone();
+    recovery.shutdown().await?;
+    drop(recovery);
+    let history = std::fs::read(path.join("recovery.jsonl"))?;
+    let approval_history = std::fs::read(path.join("approvals/approvals.jsonl"))?;
+    let mut changed_scopes = Vec::new();
+    let mut language = executor_config();
+    language.allowed_languages.push("sh".into());
+    changed_scopes.push(language);
+    let mut platform = executor_config();
+    platform.platform = "different-platform".into();
+    changed_scopes.push(platform);
+    let mut queries = executor_config();
+    queries
+        .diagnostic_queries
+        .push("additional-inspection".into());
+    changed_scopes.push(queries);
+    for changed in changed_scopes {
+        let changed_backend = Arc::new(NodeRepairBackend::new(
+            harnesses.clone(),
+            extensions.clone(),
+            changed,
+        )?);
+        assert!(
+            RecoveryService::open(&path, settings.clone(), changed_backend).is_err(),
+            "the same state root must reject changes to trusted executor scope"
+        );
+        assert_eq!(std::fs::read(path.join("recovery.jsonl"))?, history);
+        assert_eq!(
+            std::fs::read(path.join("approvals/approvals.jsonl"))?,
+            approval_history
+        );
+    }
+    let restored = RecoveryService::open(&path, settings, adapter)?;
+    let task = restored.query(&task.id)?.unwrap();
+    assert_eq!(task.operation, original_operation);
+    assert_eq!(task.stage, RecoveryStage::Paused);
+    restored.shutdown().await?;
     harnesses.shutdown().await?;
     extensions.shutdown().await?;
     server.shutdown()?;

@@ -1,7 +1,6 @@
 use recuvora_core::recovery::{
     approval::{ApprovalDecision, ApprovalPolicy, ApprovalState, ReviewerConfig},
     incidents::{IncidentKind, IncidentRecord, IncidentStatus, SignalCondition},
-    knowledge::ScriptArtifact,
 };
 use recuvora_host::integrations::recovery::*;
 use recuvora_host::monitoring::*;
@@ -194,34 +193,24 @@ fn config() -> RecoveryConfig {
         reviewer,
         delegation: "repair only a currently active target fault".into(),
         allowed_targets: vec!["target-a".into()],
-        allowed_action_kinds: vec!["execute_script".into()],
+        allowed_action_kinds: vec!["repair_with_harness".into()],
         ttl_secs: 600,
     };
     RecoveryConfig {
-        schema_version: 1,
+        schema_version: 2,
         execution_harness: "executor".into(),
         target: TargetBinding {
             target_id: "target-a".into(),
             executor_id: "target-node".into(),
-            platform: "portable".into(),
-            allowed_languages: vec!["python".into()],
-            diagnostic_queries: vec!["snapshot".into()],
+            allowed_action_kinds: vec!["execute_script".into()],
             verification_profile: "readiness".into(),
             required_facts: BTreeMap::from([("workload_version".into(), "1".into())]),
             action_timeout_secs: 10,
         },
         approval: policy("human-repair", ReviewerConfig::Human),
-        script_approval: policy(
-            "reused-repair",
-            ReviewerConfig::Harness {
-                harness_id: "reviewer".into(),
-            },
-        ),
-        diagnosis_timeout_secs: 10,
+        summary_timeout_secs: 10,
         review_timeout_secs: 10,
         max_tool_calls: 4,
-        max_diagnoses: 2,
-        minimum_script_occurrences: 2,
         max_tasks: 16,
     }
 }
@@ -252,39 +241,23 @@ impl RepairBackend for Backend {
             })
         })
     }
-    fn diagnose(&self, input: DiagnosisInput, _: Cancellation) -> RecoveryFuture<'_, RepairPlan> {
-        Box::pin(async move {
-            Ok(RepairPlan {
-                summary: "bounded workload proposal".into(),
-                reusable: false,
-                script: ScriptArtifact {
-                    id: "script-a".into(),
-                    version: 1,
-                    language: "python".into(),
-                    platform: input.config.target.platform,
-                    source: "print('test-only proposal')".into(),
-                    preconditions: input.observation.facts,
-                    generated_by_harness: input.config.execution_harness,
-                    generated_in_session: "execution-session".into(),
-                },
-            })
-        })
-    }
     fn review(&self, _: ReviewInput, _: Cancellation) -> RecoveryFuture<'_, ReviewOutput> {
         Box::pin(async { panic!("human-review fixture must not invoke a model reviewer") })
     }
     fn execute<'a>(
         &'a self,
-        script: AuthorizedScript<'a>,
+        script: AuthorizedRepair<'a>,
         _: Cancellation,
-    ) -> RecoveryFuture<'a, ScriptReceipt> {
+    ) -> RecoveryFuture<'a, RepairReceipt> {
         Box::pin(async move {
+            script.validate_dispatch()?;
             self.executions.fetch_add(1, Ordering::SeqCst);
-            Ok(ScriptReceipt {
+            script.finish_dispatch();
+            Ok(RepairReceipt {
                 execution_trace: Vec::new(),
                 operation_id: script.operation().operation_id.clone(),
                 target_id: script.operation().target.clone(),
-                outcome: ScriptOutcome::Executed,
+                outcome: RepairExecutionOutcome::Executed,
                 executor_stopped: true,
                 evidence_refs: vec!["external-action:receipt".into()],
                 summary: "test receipt".into(),
