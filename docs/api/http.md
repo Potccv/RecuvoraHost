@@ -1,6 +1,6 @@
 # HTTP API v1
 
-`recuvora-host serve`提供带Bearer认证的核心服务映射。HTTP与CLI直接编译，不需要server或web-ui feature；本应用不嵌入页面，可选择托管外部ui_dir。UI是否连接不影响后台服务生命周期。
+`recuvora-host serve`提供带 Bearer 认证的 Host 应用接口。HTTP与CLI直接编译，不需要server或web-ui feature；本应用不嵌入页面，可选择托管外部ui_dir。UI是否连接不影响后台服务生命周期。
 
 ## 启动与身份
 
@@ -50,14 +50,14 @@ ui_dir为空时页面路由返回404。配置后启动加载固定14份官方静
 | `POST /incidents/{id}/acknowledge` | revision、note；要求incident.read与incident.acknowledge |
 | `GET /recovery/status` | 恢复流程调度器的 running 与 last_error；要求 recovery.read |
 | `GET /recovery/tasks` | Core 任务摘要分页；要求 recovery.read |
-| `GET /recovery/tasks/{id}` | RecoveryTask 任务详情，包含完整方案、操作和独立证据；要求 recovery.read |
+| `GET /recovery/tasks/{id}` | RecoveryTask 任务详情，包含故障、已提交操作、实际动作和独立证据；要求 recovery.read |
 | `GET /recovery/tasks/{id}/approval` | 原始 Core ApprovalRecord，无审批时 record:null；要求 recovery.read |
 | `POST /recovery/tasks/{id}/decision` | 审批 revision、decision:approve/deny/escalate、reason；要求 recovery.read 与 recovery.decide |
 | `POST /recovery/tasks/{id}/resume` | 任务 revision；要求 recovery.read 与 recovery.resume |
 | `POST /recovery/tasks/{id}/check_result` | operation_id、任务 revision；要求 recovery.read 与 recovery.check_result；异步读取节点证据 |
 | `POST /recovery/knowledge/search` | conditions、可选 keywords、limit:1–100；只读，要求 knowledge.read |
 
-## Core 恢复流程接口
+## 自动恢复流程接口
 
 recovery_config 显式启用恢复流程；未配置的资源返回 503，无访问权限返回 403，未知任务返回 404。`/recovery/tasks` 使用共同 cursor、limit、state、query、task_id 参数，state 保留 Core snake_case 阶段；任务详情由 Core 记录生成；`result_check` 保存核实结果，执行证据中的 `checked_at_ms` 为核实时刻。审批使用完整 Core 类型。未获取完整操作和规则前不能批准。
 
@@ -67,7 +67,7 @@ decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revi
 
 修复经验搜索是只读 POST，不创建 operation。conditions 为 1–32 项准确条件，keywords 最多 32 项，limit 为 1–100；匹配规则由 Core KnowledgeQuery 决定。经验记录只通过 `experiences` 数组返回，元素为完整 `RepairExperience`，包含结果、证据、实际 `actions` 和总结报告。失败和 Unknown 仍作为明确标记的负面参考返回；按记录时间降序、ID 升序排序后应用 limit。实际动作版本隔离不会删除负面经验，结果核实也不会解除永久隔离。候选和经验均不授予执行权限。
 
-恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 提供独立文本修复视图，不混入新恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
+恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 提供独立文本修复视图，不混入自动恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
 
 ## 接受、结果与重复请求
 

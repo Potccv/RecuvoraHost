@@ -26,7 +26,7 @@ Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供 `I
 
 ## 独立经验处理
 
-`RepairBackend::summarize(job, config, cancellation)` 接收已提交结果快照并返回 `ExperienceReport`，不执行修复动作；默认实现返回不可用。内置 `NodeRepairBackend` 只向无工具 Harness 发送 64 KiB 内的总结投影，完整 `ExperienceJob` 仍由 Core 保留；投影省略字段时返回的候选不会保存，脚本化状态固定为 `Undetermined`。`RecoveryService::summarize_pending` 推进自动预算内的总结和交付，`retry_experiences` 可在三次自动尝试后显式再试，`pending_experiences` 查询待处理工作，`experiences(&KnowledgeQuery)` 查询已提交经验。所有外部总结调用纳入 `CallScope`，关闭时取消并等待。
+`RepairBackend::summarize(job, config, cancellation)` 接收已提交结果快照并返回 `ExperienceReport`，不执行修复动作；默认实现返回不可用。内置 `NodeRepairBackend` 只向无工具 Harness 发送 64 KiB 内的总结投影，完整 `ExperienceJob` 仍保留在 Host 持久保存的领域历史中；投影省略字段时返回的候选不会保存，脚本化状态固定为 `Undetermined`。`RecoveryService::summarize_pending` 推进自动预算内的总结和交付，`retry_experiences` 可在三次自动尝试后显式再试，`pending_experiences` 查询待处理工作，`experiences(&KnowledgeQuery)` 查询已提交经验。所有外部总结调用纳入 `CallScope`，关闭时取消并等待。
 
 `NodeRepairBackend::new(harnesses, extensions, executor)` 显式接收 `ScriptExecutorConfig` 并返回 `Result`。该 Host 配置限定脚本平台、语言和只读检查查询；Core 只接收中立 `RepairArtifact`，不解释其脚本载荷。`RepairBackend::persistence_binding()` 必须返回影响派发的额外可信配置，包装后端须转发；内置后端返回执行器配置。恢复与派发日志头固定绑定该值，同一状态目录改变配置时拒绝打开，不能扩大原审批范围。
 

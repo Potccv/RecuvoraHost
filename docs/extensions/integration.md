@@ -15,7 +15,7 @@
 | 远端 Harness provider/factory 与工具回调 | `src/integrations/harness/` |
 | ExtensionRegistry 到 ObservationSource 的适配 | `src/integrations/monitoring/mod.rs` |
 | ExtensionRegistry/HarnessRegistry 到 RepairBackend 的适配与 Host 脚本解释 | `src/integrations/recovery/node_backend.rs`、`executor.rs`、`harness_repair.rs` |
-| Core 恢复流程配置、按配置启动，关闭时等待当前任务结束 | `src/configuration/recovery.rs`、`src/boot/host.rs` |
+| Host 恢复服务配置、按配置启动及等待在途任务结束 | `src/configuration/recovery.rs`、`src/boot/host.rs` |
 | 监控故障绑定、IncidentGuard 与恢复流程调度 | `src/integrations/recovery/incident_guard.rs`、`scheduler.rs` |
 | Core 任务、审批、修复经验与根据节点证据核实结果的 HTTP 管理 | `src/server/recovery.rs` |
 | 插件 UI catalog、view 与页面刷新 HTTP 接口 | `src/server/http.rs`、`src/server/monitoring.rs`、`src/server/plugin_pages.rs` |

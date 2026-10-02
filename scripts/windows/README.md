@@ -19,7 +19,7 @@ cargo run --locked --features dev-check --bin recuvora-host-check -- --build-dir
 | `--cargo-path PATH` | 可选，已有 Cargo 程序；默认 `cargo` |
 | `--help` | 单独显示帮助，不查询 metadata 或执行检查 |
 
-脚本通过 Cargo metadata 识别本项目及直接本地路径依赖，拒绝输出位于这些源码树内或通过符号链接/reparse point 写入。两个输出路径都通过校验后才创建目录，不清空传入目录。测试临时根须符合旧文件动作的路径限制；隐藏目录仅在它恰好是配置的测试根时被豁免，不能把隐藏根下的子目录改配为测试根。
+脚本通过 Cargo metadata 识别本项目及直接本地路径依赖，拒绝输出位于这些源码树内或通过符号链接/reparse point 写入。两个输出路径都通过校验后才创建目录，不清空传入目录。测试临时根须符合本机文本动作的路径限制；隐藏目录仅在它恰好是配置的测试根时被豁免，不能把隐藏根下的子目录改配为测试根。
 
 检查顺序为 `cargo fmt --package recuvora-host -- --check`、`cargo check --all-targets --locked`、`cargo test --all-targets --locked`、`cargo test --doc --locked` 和 `cargo clippy --all-targets --locked -- -D warnings`。格式检查限定本包，其它命令编译本地依赖，不运行 Core 自身测试套件。
 

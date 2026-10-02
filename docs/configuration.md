@@ -32,13 +32,13 @@ ui_dir为null时只提供API，页面路由返回404。设置后目录必须包�
 
 ## 恢复流程配置
 
-recovery_config 缺省为 null，显式填写才启动 Core 恢复流程和恢复流程调度器。服务须同时初始化 Harness、扩展和监控；缺少依赖或触发绑定不匹配时拒绝启动。恢复流程文件最多 64 KiB，字段严格且未知字段拒绝；读取配置不创建状态或派发工作。
+recovery_config 缺省为 null，显式填写才启动 Host 恢复服务和恢复流程调度器。服务须同时初始化 Harness、扩展和监控；缺少依赖或触发绑定不匹配时拒绝启动。恢复流程文件最多 64 KiB，字段严格且未知字段拒绝；读取配置不创建状态或派发工作。
 
 RecoveryHostConfig 包含 schema_version:2、data_dir、必填 ownership_dir、recovery、executor、triggers、interval_ms，以及可选 approval_store、knowledge_store。内层恢复配置由 RecoveryConfig 定义；审批和 knowledge 存储使用 Host 配置类型；领域集合限额交给 Core，文件字节限额由 Host 校验。data_dir 与 ownership_dir 可相对恢复流程配置目录解析，必须位于源码外，彼此不重叠，且与控制文件、TLS 信任文件、服务状态和独立文本修复状态分开。同一 target 不允许同时由自动恢复流程和独立文本流程管理恢复。Host 检查日志/锁文件身份及容量，并保护恢复流程配置、状态和共享所有权，独立文本动作不能改写它们。
 
 ownership_dir 是所有保护同一规范目标的恢复存储共用的稳定权威目录，不能根据 data_dir 自动生成，也不能通过更换它绕过未完成任务。该字段缺失时拒绝加载，不启用自动恢复。target_id 须满足 Host CanonicalTarget 的小写稳定逻辑身份规则，目标别名由可信部署者统一映射。Host 使用 Host FileTargetOwnership 取得租约；非终态与 Unknown 保留持久所有者，同一存储可以重启恢复，其他存储继续被拒绝。读取配置不会创建这两个目录。
 
-triggers 为 1–64 项可信固定绑定，包含 monitor_id、rule_id、fingerprint、keywords、conditions，不能由观察提供方或请求正文选择；当前 rule_id 与 monitor_id 一致。`conditions` 与 `recovery.target.required_facts` 一致合并后构成经验的稳定适用条件，同名不同值拒绝；`fault_fingerprint` 为 Core 保留键，不得在两处配置。影响经验适用性的版本或部署类型应明确列入稳定条件。进程号、实时计数等动态值应作为节点观察，不能自动成为经验适用条件。合并条件连同 Core 注入的故障指纹最多 32 项。interval_ms 为 10–3600000。每个触发的已登记监控必须属于 recovery.target.target_id。节点中的 executor_id、Harness address 和工作区由 Host 配置解析，不进入 Core 路由逻辑。
+triggers 为 1–64 项可信固定绑定，包含 monitor_id、rule_id、fingerprint、keywords、conditions，不能由观察提供方或请求正文选择；当前 rule_id 与 monitor_id 一致。`conditions` 与 `recovery.target.required_facts` 一致合并后构成经验的稳定适用条件，同名不同值拒绝；`fault_fingerprint` 为 Core 保留键，不得在两处配置。影响经验适用性的版本或部署类型应明确列入稳定条件。进程号、实时计数等动态值应作为节点观察，不能自动成为经验适用条件。合并条件连同 Core 注入的故障指纹最多 32 项。interval_ms 为 10–3600000。每个触发的已登记监控必须属于 recovery.target.target_id。节点中的 executor_id、Harness address 和工作区由 Host 配置解析，不进入 Core 领域配置。
 
 模板见 [恢复流程](../profiles/repair.recovery.example.json)和[服务组合](../profiles/server.recovery.example.json)。原始日志上传及 CoreSettings 不属于当前 Core 或 Host 接口；log_sources 仅用于只读查询监控目标的记录，每页最多 32 条。
 

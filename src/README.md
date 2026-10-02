@@ -9,7 +9,7 @@
 | [harnesses](harnesses/README.md) | Harness 注册、选择、会话/项目/工具接口约定与校验 |
 | [protocol](protocol/README.md) | Host 的消息、schema、ID 与限额实现；外部节点按文档独立接入 |
 | [integrations](integrations/README.md) | 协议会话、ExtensionRegistry、远端 Harness/监控/修复后端 |
-| [actions](actions/README.md)、[repair](repair/README.md)、[simulation](simulation/README.md) | 旧本机文本动作、人工工具流程和模拟测试 |
+| [actions](actions/README.md)、[repair](repair/README.md)、[simulation](simulation/README.md) | 独立本机文本动作、人工工具流程和模拟测试 |
 | [cli](cli/README.md)、[server](server/README.md)、[presentation](presentation/README.md) | 操作入口、认证授权和事实视图 |
 
 程序入口为 [main.rs](main.rs)，库导出以 [lib.rs](lib.rs)为准；`cli` 与 `presentation` 为内部模块，其余模块提供公开服务。接口概览见 [Host Rust API](../docs/api/rust.md)。
