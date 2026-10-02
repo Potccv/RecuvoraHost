@@ -21,6 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+static LARGE_SUMMARY_INSPECTIONS: AtomicU64 = AtomicU64::new(0);
+static LARGE_SUMMARY_EXECUTIONS: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> TestResult {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -34,6 +36,7 @@ fn main() -> TestResult {
         "unified-lost-receipt",
         "unified-backend-error",
         "unified-invalid-trace",
+        "unified-large-summary",
     ] {
         runtime.block_on(Box::pin(unified_repair(mode)))?;
     }
@@ -92,6 +95,30 @@ fn now_ms() -> u64 {
 }
 fn current_facts() -> BTreeMap<String, String> {
     BTreeMap::from([("release".into(), "v1".into())])
+}
+fn large_summary_source() -> String {
+    let source = "\"\\\n中".repeat(3_560);
+    let encoded =
+        serde_json::to_vec(&json!({"language":"powershell","platform":"windows","source":source}))
+            .unwrap();
+    assert!((31 * 1024..=32 * 1024).contains(&encoded.len()));
+    source
+}
+fn large_summary_preconditions() -> BTreeMap<String, String> {
+    let mut values = BTreeMap::from([("release".into(), "v1".into())]);
+    for index in 1..32 {
+        values.insert(format!("condition-{index:02}"), format!("value-{index:02}"));
+    }
+    assert_eq!(values.len(), 32);
+    assert!(values.values().all(|value| value.len() <= 1024));
+    values
+}
+fn large_summary_evidence() -> Vec<String> {
+    let values: Vec<_> = (0..32)
+        .map(|index| format!("{index:02}{}", "\\\"".repeat(449)))
+        .collect();
+    assert!(values.iter().all(|value| value.len() == 900));
+    values
 }
 fn verification_input(target: TargetBinding) -> VerificationInput {
     VerificationInput {
@@ -897,6 +924,11 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
             "inspect" => {
                 assert_eq!(params["query"], "snapshot");
                 let mut facts = current_facts();
+                if mode == "unified-large-summary"
+                    && LARGE_SUMMARY_INSPECTIONS.fetch_add(1, Ordering::AcqRel) > 0
+                {
+                    facts = large_summary_preconditions();
+                }
                 if mode == "skewed-clock" {
                     facts.insert("node_clock_unix_ms".into(), "1".into());
                 }
@@ -904,7 +936,12 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
             }
             "verify" => {
                 assert_eq!(params["profile"], "health");
-                json!({"operation_id":params["operation_id"],"target_id":"target","profile":"health","healthy":true,"executor_stopped":true,"evidence_refs":["verification:fixture"],"age_ms":age_ms})
+                let evidence = if mode == "unified-large-summary" {
+                    large_summary_evidence()
+                } else {
+                    vec!["verification:fixture".into()]
+                };
+                json!({"operation_id":params["operation_id"],"target_id":"target","profile":"health","healthy":true,"executor_stopped":true,"evidence_refs":evidence,"age_ms":age_ms})
             }
             "reconcile" => {
                 json!({"operation_id":params["operation_id"],"target_id":if mode == "wrong-result-check" { "wrong-target" } else { "target" },"executor_id":"fixture-node","outcome":if mode == "unknown-result-check" {"unknown"} else {"executed"},"executor_stopped":true,"evidence_refs":["execution:checked-fixture"],"age_ms":age_ms})
@@ -915,7 +952,19 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                         .as_str()
                         .is_some_and(|id| id.starts_with("approval-"))
                 );
-                assert_eq!(params["operation"]["action"]["script"]["source"], "exit 0");
+                if mode == "unified-large-summary" {
+                    assert_eq!(
+                        params["operation"]["action"]["script"]["source"],
+                        large_summary_source()
+                    );
+                    assert_eq!(
+                        params["operation"]["action"]["script"]["preconditions"],
+                        serde_json::to_value(large_summary_preconditions())?
+                    );
+                    LARGE_SUMMARY_EXECUTIONS.fetch_add(1, Ordering::AcqRel);
+                } else {
+                    assert_eq!(params["operation"]["action"]["script"]["source"], "exit 0");
+                }
                 if matches!(
                     mode,
                     "lost-receipt"
@@ -968,7 +1017,36 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                         .unwrap()
                         .starts_with("Summarize the ACTUAL")
                 );
-                if mode == "unified-summary-failure" {
+                if mode == "unified-large-summary" {
+                    let prompt = params["prompt"].as_str().unwrap();
+                    assert!(prompt.len() <= 64 * 1024);
+                    let context: Value =
+                        serde_json::from_str(prompt.rsplit_once("Evidence: ").unwrap().1)?;
+                    assert_eq!(context["context_complete"], false);
+                    assert_eq!(context["fault"]["fingerprint"], "workload-failure");
+                    assert_eq!(context["execution"]["outcome"], "executed");
+                    assert_eq!(context["execution"]["executor_stopped"], true);
+                    assert_eq!(context["verification"]["healthy"], true);
+                    assert_eq!(context["verification"]["executor_stopped"], true);
+                    assert_eq!(
+                        context["actual_actions"][0]["payload"]["source"],
+                        large_summary_source()
+                    );
+                    assert_eq!(
+                        context["operation"]["target_required_facts"]["release"],
+                        "v1"
+                    );
+                    assert!(context.get("task").is_none());
+                    assert!(context["operation"].get("action").is_none());
+                    let omissions = context["omissions"].as_array().unwrap();
+                    let omission = omissions
+                        .iter()
+                        .find(|value| value["field"] == "verification.evidence_refs")
+                        .unwrap();
+                    assert_eq!(omission["omitted_items"], 32);
+                    assert!(omission["encoded_bytes"].as_u64().unwrap() > 32 * 1024);
+                    json!({"summary":"Large repair observation", "lessons":"Model candidate must be discarded when bounded context omits fields", "related_experience_ids":[], "assessment":"possible", "reason":"Model incorrectly assumed omitted preconditions", "script":{"language":"powershell","source":"Write-Output unsafe-candidate", "preconditions":{"release":"v1"}}}).to_string()
+                } else if mode == "unified-summary-failure" {
                     "invalid report".into()
                 } else if mode == "unified-candidate" {
                     json!({"summary":"Repair observation", "lessons":"Check release before applying", "related_experience_ids":[], "assessment":"possible", "reason":"Bounded repeatable repair", "script":{"language":"powershell","source":"Write-Output candidate", "preconditions":{"release":"v1"}}}).to_string()
@@ -1019,8 +1097,18 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                     }
                 } else {
                     for index in 0..2 {
+                        let source = if mode == "unified-large-summary" {
+                            large_summary_source()
+                        } else {
+                            "exit 0".into()
+                        };
+                        let preconditions = if mode == "unified-large-summary" {
+                            large_summary_preconditions()
+                        } else {
+                            BTreeMap::from([("release".into(), "v1".into())])
+                        };
                         session.write(Message::Callback { id: format!("repair-callback-{index}"), parent_id: id.clone(), method: "tool".into(),
-                        params: json!({"harness_id":"remote", "thread_id":"execution-thread", "turn_id":"turn-1", "call_id":format!("repair-call-{index}"), "tool":"apply_repair", "arguments":{"language":"powershell","source":"exit 0","preconditions":{"release":"v1"}}}) })?;
+                        params: json!({"harness_id":"remote", "thread_id":"execution-thread", "turn_id":"turn-1", "call_id":format!("repair-call-{index}"), "tool":"apply_repair", "arguments":{"language":"powershell","source":source,"preconditions":preconditions}}) })?;
                         match session.read()? {
                             Some(Message::Result { result, .. }) => assert_eq!(
                                 result["success"],
@@ -1106,9 +1194,15 @@ impl RepairBackend for PostExecutionFault {
 }
 
 async fn unified_repair(mode: &str) -> TestResult {
+    if mode == "unified-large-summary" {
+        LARGE_SUMMARY_INSPECTIONS.store(0, Ordering::Release);
+        LARGE_SUMMARY_EXECUTIONS.store(0, Ordering::Release);
+    }
     let (adapter, harnesses, extensions, server) = backend(mode).await?;
 
     let dir = TestDir::new()?;
+    let recovery_path = dir.path.join("unified");
+    let ownership_path = dir.path.join("ownership");
     let mut settings = config();
     settings.approval.allowed_action_kinds = vec!["repair_with_harness".into()];
     let service_backend: Arc<dyn RepairBackend> =
@@ -1120,11 +1214,8 @@ async fn unified_repair(mode: &str) -> TestResult {
         } else {
             adapter.clone()
         };
-    let recovery =
-        RecoveryService::open(dir.path.join("unified"), settings.clone(), service_backend)?;
-    recovery.bind_target_ownership(Arc::new(FileTargetOwnership::open(
-        dir.path.join("ownership"),
-    )?))?;
+    let recovery = RecoveryService::open(&recovery_path, settings.clone(), service_backend)?;
+    recovery.bind_target_ownership(Arc::new(FileTargetOwnership::open(&ownership_path)?))?;
     recovery.bind_incident_guard(Arc::new(FixtureIncidentGuard))?;
     let task = recovery.submit(problem())?;
 
@@ -1154,6 +1245,66 @@ async fn unified_repair(mode: &str) -> TestResult {
         assert_eq!(task.stage, RecoveryStage::Completed, "{:?}", task.note);
     }
     assert_eq!(task.receipt.as_ref().unwrap().execution_trace.len(), 1);
+    if mode == "unified-large-summary" {
+        let receipt = task.receipt.as_ref().unwrap();
+        assert_eq!(receipt.evidence_refs, vec!["execution:fixture"]);
+        assert_eq!(
+            receipt.execution_trace[0].payload["source"],
+            large_summary_source()
+        );
+        assert_eq!(
+            receipt.execution_trace[0].preconditions,
+            large_summary_preconditions()
+        );
+        assert_eq!(
+            task.verification.as_ref().unwrap().evidence_refs,
+            large_summary_evidence()
+        );
+        recovery.shutdown().await?;
+        drop(recovery);
+
+        let restored = RecoveryService::open(&recovery_path, settings, adapter.clone())?;
+        restored.bind_target_ownership(Arc::new(FileTargetOwnership::open(&ownership_path)?))?;
+        restored.bind_incident_guard(Arc::new(FixtureIncidentGuard))?;
+        restored.retry_experiences(Cancellation::new()).await?;
+        assert!(restored.pending_experiences()?.is_empty());
+        assert_eq!(LARGE_SUMMARY_EXECUTIONS.load(Ordering::Acquire), 1);
+
+        let mut conditions = current_facts();
+        conditions.insert("fault_fingerprint".into(), "workload-failure".into());
+        conditions.insert("platform".into(), "windows".into());
+        let experiences = restored.experiences(&KnowledgeQuery {
+            conditions,
+            keywords: vec!["failure".into()],
+            limit: 4,
+        })?;
+        assert_eq!(experiences.len(), 1);
+        let experience = &experiences[0];
+        assert_eq!(
+            experience.actions[0].payload["source"],
+            large_summary_source()
+        );
+        assert_eq!(
+            experience.actions[0].preconditions,
+            large_summary_preconditions()
+        );
+        assert_eq!(experience.evidence_refs, large_summary_evidence());
+        let recuvora_core::recovery::knowledge::Scriptability::Undetermined { reason } =
+            &experience.report.scriptability
+        else {
+            panic!("omitted summary context must not produce a script candidate");
+        };
+        assert!(reason.contains("evidence_refs"));
+        assert_eq!(
+            restored.query(&task.id)?.unwrap().stage,
+            RecoveryStage::Completed
+        );
+        restored.shutdown().await?;
+        harnesses.shutdown().await?;
+        extensions.shutdown().await?;
+        server.shutdown()?;
+        return Ok(());
+    }
     if mode == "unified-summary-failure" {
         for _ in 0..4 {
             recovery.summarize_pending(Cancellation::new()).await?;
@@ -1167,7 +1318,7 @@ async fn unified_repair(mode: &str) -> TestResult {
             RecoveryStage::Completed
         );
         recovery.shutdown().await?;
-        let restored = RecoveryService::open(dir.path.join("unified"), settings, adapter.clone())?;
+        let restored = RecoveryService::open(&recovery_path, settings, adapter.clone())?;
         assert_eq!(restored.pending_experiences()?[0].attempt, 3);
         restored.retry_experiences(Cancellation::new()).await?;
         assert_eq!(restored.pending_experiences()?[0].attempt, 4);

@@ -38,7 +38,7 @@ RecoveryHostConfig 包含 schema_version:2、data_dir、必填 ownership_dir、r
 
 ownership_dir 是所有保护同一规范目标的恢复存储共用的稳定权威目录，不能根据 data_dir 自动生成，也不能通过更换它绕过未完成任务。该字段缺失时拒绝加载，不启用自动恢复。target_id 须满足 Host CanonicalTarget 的小写稳定逻辑身份规则，目标别名由可信部署者统一映射。Host 使用 Host FileTargetOwnership 取得租约；非终态与 Unknown 保留持久所有者，同一存储可以重启恢复，其他存储继续被拒绝。读取配置不会创建这两个目录。
 
-triggers 为 1–64 项可信固定绑定，包含 monitor_id、rule_id、fingerprint、keywords、conditions，不能由观察提供方或请求正文选择；当前 rule_id 与 monitor_id 一致。interval_ms 为 10–3600000。每个触发的已登记监控必须属于 recovery.target.target_id。节点中的 executor_id、Harness address 和工作区由 Host 配置解析，不进入 Core 路由逻辑。
+triggers 为 1–64 项可信固定绑定，包含 monitor_id、rule_id、fingerprint、keywords、conditions，不能由观察提供方或请求正文选择；当前 rule_id 与 monitor_id 一致。`conditions` 与 `recovery.target.required_facts` 一致合并后构成经验的稳定适用条件，同名不同值拒绝；`fault_fingerprint` 为 Core 保留键，不得在两处配置。影响经验适用性的版本或部署类型应明确列入稳定条件。进程号、实时计数等动态值应作为节点观察，不能自动成为经验适用条件。合并条件连同 Core 注入的故障指纹最多 32 项。interval_ms 为 10–3600000。每个触发的已登记监控必须属于 recovery.target.target_id。节点中的 executor_id、Harness address 和工作区由 Host 配置解析，不进入 Core 路由逻辑。
 
 模板见 [恢复流程](../profiles/repair.recovery.example.json)和[服务组合](../profiles/server.recovery.example.json)。原始日志上传及 CoreSettings 不属于当前 Core 或 Host 接口；log_sources 仅用于只读查询监控目标的记录，每页最多 32 条。
 

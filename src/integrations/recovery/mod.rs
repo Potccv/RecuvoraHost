@@ -12,6 +12,7 @@ mod scheduler;
 mod service;
 pub(crate) mod storage_layout;
 mod storage_paths;
+mod summary_context;
 
 pub use contract::*;
 pub use incident_gate::{IncidentDispatchLease, IncidentGuard, IncidentReadiness};
