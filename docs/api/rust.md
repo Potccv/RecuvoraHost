@@ -23,3 +23,9 @@ Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供 `I
 协议类型与校验接口见 [Protocol Rust API](protocol.md)，应用职责与关闭顺序见 [架构](../architecture.md)。外部节点使用 [语言无关协议规范](../extensions/protocol.md)，不依赖本库。
 
 Core 0.2 的存储格式及离线导入前提见 [持久化](../../src/persistence/README.md)。所有领域提案只在可靠保存后确认；重放历史不得派发旧副作用。旧工作流身份保留、安装顺序与导入限制见 [HOST-003](../status.md#host-003)。
+
+## 独立经验处理
+
+`RepairBackend::summarize(job, config, cancellation)` 接收已提交结果快照并返回 `ExperienceReport`，不执行修复动作；默认实现返回不可用。`RecoveryService::summarize_pending` 推进自动预算内的总结和交付，`retry_experiences` 可在三次自动尝试后显式再试，`pending_experiences` 查询待处理工作，`experiences(&KnowledgeQuery)` 查询已提交经验。所有外部总结调用纳入 `CallScope`，关闭时取消并等待。
+
+自定义后端处理 `repair_with_harness` 时必须通过 `AuthorizedScript` 的派发门先 `prepare_repair_action` 持久保存具体动作，再于实际发送前 `validate`，发送结束 `release`。动作使用原 operation_id，具体脚本 ID 为 `<operation_id>-action`、version 为 1；回执 `execution_trace` 与已保存动作完全一致。后端只能在可信委托内执行最多一次变更，不能把模型最终文本变成回执。旧脚本许可仍绑定完整已审批脚本。

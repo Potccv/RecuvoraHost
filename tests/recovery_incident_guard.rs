@@ -281,6 +281,7 @@ impl RepairBackend for Backend {
         Box::pin(async move {
             self.executions.fetch_add(1, Ordering::SeqCst);
             Ok(ScriptReceipt {
+                execution_trace: Vec::new(),
                 operation_id: script.operation().operation_id.clone(),
                 target_id: script.operation().target.clone(),
                 outcome: ScriptOutcome::Executed,

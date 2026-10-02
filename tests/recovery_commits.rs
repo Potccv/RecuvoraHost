@@ -109,6 +109,7 @@ impl RepairBackend for Backend {
             self.record("executions.log", &script.operation().operation_id)?;
             guard.release();
             Ok(ScriptReceipt {
+                execution_trace: Vec::new(),
                 operation_id: script.operation().operation_id.clone(),
                 target_id: script.operation().target.clone(),
                 outcome: if matches!(

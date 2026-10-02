@@ -291,6 +291,14 @@ impl State {
         Ok(())
     }
     fn deliver(&mut self, now: u64) -> Result<(), RecoveryError> {
+        for job in self.workflow.pending_experiences() {
+            if job.report.is_some() {
+                self.knowledge
+                    .record_experience(job.record(&self.workflow.config().target.platform)?)
+                    .map_err(service)?;
+                self.event(RecoveryEvent::ExperienceDelivered { job_id: job.id }, now)?;
+            }
+        }
         // The reducer orders by created_revision, including accumulated failures.
         for delivery in self.workflow.pending_deliveries() {
             let candidate_id = delivery.candidate.id.clone();
@@ -599,6 +607,17 @@ impl RecoveryService {
     pub fn tasks(&self) -> Result<Vec<RecoveryTask>, RecoveryError> {
         self.read_state(|s| Ok(s.workflow.tasks().cloned().collect()))
     }
+    pub fn experiences(
+        &self,
+        query: &KnowledgeQuery,
+    ) -> Result<Vec<recuvora_core::recovery::knowledge::RepairExperience>, RecoveryError> {
+        self.read_state(|s| {
+            s.knowledge
+                .state()
+                .search_experiences(query)
+                .map_err(service)
+        })
+    }
     pub fn knowledge(&self, query: &KnowledgeQuery) -> Result<Vec<KnowledgeRecord>, RecoveryError> {
         self.read_state(|s| s.knowledge.search(query).map_err(service))
     }
@@ -711,10 +730,105 @@ impl RecoveryService {
                     service: service.clone(),
                     id: id.clone(),
                 };
-                service.run(&id, cancel).await
+                Box::pin(service.run(&id, cancel)).await
             })
             .await
             .map_err(super::service)?
+    }
+    /// Retry only post-repair summaries and delivery; never redispatch repair work.
+    pub fn summarize_pending(
+        self: &Arc<Self>,
+        cancellation: Cancellation,
+    ) -> RecoveryFuture<'_, ()> {
+        Box::pin(self.summarize_pending_with_retry(cancellation, false))
+    }
+    /// Explicit operator retry after the automatic three-attempt summary budget.
+    pub fn retry_experiences(
+        self: &Arc<Self>,
+        cancellation: Cancellation,
+    ) -> RecoveryFuture<'_, ()> {
+        Box::pin(self.summarize_pending_with_retry(cancellation, true))
+    }
+    async fn summarize_pending_with_retry(
+        self: &Arc<Self>,
+        cancellation: Cancellation,
+        explicit: bool,
+    ) -> Result<(), RecoveryError> {
+        self.accepting()?;
+        let service = self.clone();
+        let cancel = cancellation.clone();
+        self.calls
+            .run(cancellation, async move {
+                let jobs = service.with_state(|s| Ok(s.workflow.pending_experiences()))?;
+                for job in jobs
+                    .into_iter()
+                    .filter(|j| {
+                        j.report.is_none() && j.call_id.is_none() && (explicit || j.attempt < 3)
+                    })
+                    .take(4)
+                {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    let effects = service.with_state(|s| {
+                        s.event(
+                            RecoveryEvent::BeginExperience {
+                                job_id: job.id.clone(),
+                            },
+                            service.clock.now_ms(),
+                        )
+                    })?;
+                    let Some(RecoveryEffect::SummarizeExperience { job, call_id }) =
+                        effects.into_iter().next()
+                    else {
+                        return Err(super::service("missing summary effect"));
+                    };
+                    let result = bounded(
+                        service.backend.summarize(
+                            *job.clone(),
+                            service.config.clone(),
+                            cancel.clone(),
+                        ),
+                        cancel.clone(),
+                        service.config.diagnosis_timeout_secs,
+                    )
+                    .await;
+                    service.with_state(|s| {
+                        let event = match result {
+                            Ok(report) => RecoveryEvent::ExperienceSummarized {
+                                job_id: job.id.clone(),
+                                call_id: call_id.clone(),
+                                report,
+                            },
+                            Err(error) => RecoveryEvent::ExperienceFailed {
+                                job_id: job.id.clone(),
+                                call_id: call_id.clone(),
+                                reason: bounded_reason(&error),
+                            },
+                        };
+                        if let Err(error) = s.event(event, service.clock.now_ms()) {
+                            // Validation failure is a failed summary, not a stuck in-flight call.
+                            s.event(
+                                RecoveryEvent::ExperienceFailed {
+                                    job_id: job.id.clone(),
+                                    call_id,
+                                    reason: bounded_reason(&error),
+                                },
+                                service.clock.now_ms(),
+                            )?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                service.with_state(|s| s.deliver(service.clock.now_ms()))
+            })
+            .await
+            .map_err(super::service)?
+    }
+    pub fn pending_experiences(
+        &self,
+    ) -> Result<Vec<recuvora_core::recovery::workflow::ExperienceJob>, RecoveryError> {
+        self.read_state(|s| Ok(s.workflow.pending_experiences()))
     }
     async fn run(
         self: &Arc<Self>,
@@ -723,11 +837,12 @@ impl RecoveryService {
     ) -> Result<RecoveryTask, RecoveryError> {
         for _ in 0..64 {
             self.owner()?;
-            self.with_state(|s| s.deliver(self.clock.now_ms()))?;
             let task = self.with_state(|s| s.task(id))?;
             if task.stage.terminal()
                 || matches!(task.stage, RecoveryStage::Paused | RecoveryStage::Unknown)
             {
+                // Experience failures remain visible in their durable jobs, independent of this result.
+                let _ = Box::pin(self.summarize_pending(cancellation.clone())).await;
                 return Ok(task);
             }
             if cancellation.is_cancelled()
@@ -749,6 +864,26 @@ impl RecoveryService {
                         self.config.diagnosis_timeout_secs,
                     )
                     .await?;
+                    if task.stage == RecoveryStage::Queued
+                        && self
+                            .config
+                            .approval
+                            .allowed_action_kinds
+                            .iter()
+                            .any(|kind| kind == "repair_with_harness")
+                    {
+                        self.with_state(|s| {
+                            s.apply(
+                                RecoveryCommand::StartRepair {
+                                    task_id: id.into(),
+                                    revision: task.revision,
+                                    observation,
+                                },
+                                self.clock.now_ms(),
+                            )
+                        })?;
+                        continue;
+                    }
                     let effects = self.with_state(|s| {
                         let event = if task.stage == RecoveryStage::Queued {
                             let mut conditions = observation.facts.clone();
@@ -1194,10 +1329,19 @@ impl RecoveryService {
         // client. The fallback still retains the gate until their call has ended.
         crate::integrations::extensions::DispatchGuard::release(dispatch.as_ref());
         let operation = permit.operation();
+        let execution_trace: Vec<_> = self.read_state(|s| {
+            Ok(s.workflow
+                .repair_action(&operation.operation_id)
+                .cloned()
+                .into_iter()
+                .collect())
+        })?;
         let receipt = match result {
             Ok(receipt)
                 if receipt.operation_id == operation.operation_id
                     && receipt.target_id == operation.target
+                    && (operation.action["kind"] != "repair_with_harness"
+                        || receipt.execution_trace == execution_trace)
                     && (receipt.outcome == ScriptOutcome::Unknown || receipt.executor_stopped)
                     && !receipt.evidence_refs.is_empty()
                     && receipt.evidence_refs.len() <= 32
@@ -1206,6 +1350,7 @@ impl RecoveryService {
                 receipt
             }
             result => ScriptReceipt {
+                execution_trace,
                 operation_id: operation.operation_id.clone(),
                 target_id: operation.target.clone(),
                 outcome: ScriptOutcome::Unknown,
@@ -1349,6 +1494,32 @@ struct ExecutionDispatch {
     lease: Mutex<Option<Box<dyn IncidentDispatchLease>>>,
 }
 impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
+    fn prepare_repair_action(
+        &self,
+        script: &recuvora_core::recovery::knowledge::ScriptArtifact,
+    ) -> Result<(), crate::integrations::extensions::ExtensionError> {
+        use crate::integrations::extensions::ExtensionError;
+        self.validate()?;
+        let mut state =
+            lock(&self.service.state).map_err(|e| ExtensionError::Rejected(e.to_string()))?;
+        let state = state
+            .as_mut()
+            .ok_or_else(|| ExtensionError::Rejected("service stopped".into()))?;
+        let task = state
+            .task(&self.task_id)
+            .map_err(|e| ExtensionError::Rejected(e.to_string()))?;
+        state
+            .event(
+                RecoveryEvent::RepairActionPrepared {
+                    task_id: task.id,
+                    revision: task.revision,
+                    script: script.clone(),
+                },
+                self.service.clock.now_ms(),
+            )
+            .map_err(|e| ExtensionError::Rejected(e.to_string()))?;
+        Ok(())
+    }
     fn validate(&self) -> Result<(), crate::integrations::extensions::ExtensionError> {
         let check = || -> Result<(), RecoveryError> {
             let lease = lock(&self.lease)?;
@@ -1374,20 +1545,27 @@ impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
             state.dispatch.available().map_err(service)?;
             state.approvals.ensure_current()?;
             state.knowledge.available().map_err(service)?;
-            let script = &task
-                .plan
-                .as_ref()
-                .ok_or_else(|| service("missing execution script"))?
-                .script;
-            if state.workflow.is_quarantined(&script.id, script.version)
-                || state
+            let script = task.plan.as_ref().map(|plan| &plan.script).or_else(|| {
+                task.operation
+                    .as_ref()
+                    .and_then(|operation| state.workflow.repair_action(&operation.operation_id))
+            });
+            if let Some(script) = script {
+                state
                     .knowledge
                     .state()
-                    .is_quarantined(&script.id, script.version)
-            {
-                return Err(RecoveryError::Invalid(
-                    "script quarantined before send".into(),
-                ));
+                    .validate_script(script)
+                    .map_err(service)?;
+                if state.workflow.is_quarantined(&script.id, script.version)
+                    || state
+                        .knowledge
+                        .state()
+                        .is_quarantined(&script.id, script.version)
+                {
+                    return Err(RecoveryError::Invalid(
+                        "script quarantined before send".into(),
+                    ));
+                }
             }
             Ok(())
         };

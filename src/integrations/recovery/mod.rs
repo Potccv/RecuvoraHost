@@ -1,6 +1,7 @@
 //! Host adapters that bind the Core recovery state machine to external nodes.
 
 mod contract;
+mod harness_repair;
 mod incident_gate;
 mod incident_guard;
 mod node_backend;

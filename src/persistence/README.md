@@ -31,3 +31,7 @@ Harness 审核必须先经 `begin_harness_review` 持久提交审核尝试，再
 5. 新 `RecoveryService` 继续使用原恢复根目录和同一所有权目录，不改 `recovery.lock` 身份；监控显式使用返回的 `LegacyRecoveryBundleReport.monitoring_directory`。维护 API 不自动改写启用配置。启动后按正常流程人工恢复暂停任务、独立核实 Unknown、重试有序知识交付。
 
 导入不生成新任务来替代原身份，不重放外部动作，不以缺失派发记录推断未执行。旧 Publishing 按已有证据归类为 Completed、Failed 或 Unknown 并保留有序知识交付；复用脚本失败后即使尚有诊断预算，也不在导入时自动续诊断。损坏、缺域、审批或故障关联冲突、证据不足以及不支持的压缩历史会阻止切换。测试和适用范围见 [HOST-003](../../docs/status.md#host-003)。
+
+## 独立修复经验
+
+知识日志支持 `RecordExperience`，保存无需脚本的 `RepairExperience`。只有可信恢复适配器可据已提交业务结果调用 `record_experience`；恢复日志时通过 `TrustedRepairExperience::attest` 重建权威输入，不向 HTTP 或模型开放该入口。相同身份的相同内容可幂等重试，内容冲突拒绝；候选脚本不因经验结果为成功而取得脚本验收。

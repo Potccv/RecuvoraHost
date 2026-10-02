@@ -235,6 +235,9 @@ async fn run(
         if cancellation.is_cancelled() {
             break;
         }
+        if let Err(error) = recovery.summarize_pending(cancellation.clone()).await {
+            remember(last_error, error);
+        }
         if let Err(error) = recovery.deliver_pending() {
             remember(last_error, error);
         }

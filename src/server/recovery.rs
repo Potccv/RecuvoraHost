@@ -68,7 +68,7 @@ pub(super) async fn task(
     state.require("recovery.read")?;
     let recovery = service(&state)?;
     Ok(Json(
-        json!({"task":task_view(&existing(&recovery, &id)?)?,"auto_retry":false}),
+        json!({"task":task_view(&existing(&recovery, &id)?)?,"experience_jobs":recovery.pending_experiences()?.into_iter().filter(|job| job.task.id == id).map(|job| json!({"id":job.id,"attempt":job.attempt,"pending":true,"summarized":job.report.is_some(),"last_error":job.last_error})).collect::<Vec<_>>(),"auto_retry":false}),
     ))
 }
 
@@ -228,12 +228,15 @@ pub(super) async fn knowledge(
     {
         return Err(ApiError::invalid("invalid bounded knowledge query"));
     }
-    let records = service(&state)?.knowledge(&KnowledgeQuery {
+    let query = KnowledgeQuery {
         conditions: input.conditions,
         keywords: input.keywords,
         limit: input.limit,
-    })?;
+    };
+    let recovery = service(&state)?;
+    let records = recovery.knowledge(&query)?;
+    let experiences = recovery.experiences(&query)?;
     Ok(Json(
-        json!({"items":records,"limit":input.limit,"auto_retry":false}),
+        json!({"items":records,"experiences":experiences,"limit":input.limit,"auto_retry":false}),
     ))
 }

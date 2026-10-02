@@ -100,3 +100,9 @@ log_sources由可信配置限定提供方、方法、monitor_contract、固定�
 目标记录流每页1至32条，游标由服务关联目标、来源与连续性；失效或来源变化要求明确重读，不静默跳过。此接口不会推进监控引擎保存的读取位置，也不是原始日志上传入口。所有查询都限制返回数量与数据大小，错误不伪装成空数据。
 
 接口约定检查范围见[测试说明](../../tests/README.md)。真实节点、跨机网络、浏览器/Tauri交互及业务恢复仍需部署验收。
+
+## 统一修复经验字段
+
+`GET /api/v1/recovery/tasks/{id}` 在原 `task` 之外返回 `experience_jobs`，仅列出该任务未交付的经验工作：`id`、`attempt`、`pending`、`summarized`、`last_error`。读取仍要求 `recovery.read`；这些字段不授予重执行权限。
+
+`POST /api/v1/recovery/knowledge/search` 继续要求 `knowledge.read`，原 `items` 返回兼容脚本案例，新增 `experiences` 返回精确匹配的独立修复经验。每组都受请求 `limit` 限制；经验可以没有脚本，也可以是明确标记的失败或 Unknown 发现。候选脚本不是已验证方案，不产生执行许可。HTTP 不接受客户端上传结果、脚本化结论或成功断言；总结失败的额外重试目前由可信 Rust 接口提供。

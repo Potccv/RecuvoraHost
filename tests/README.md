@@ -59,3 +59,5 @@ cargo test --locked --test ui_contract external_ui_assets_and_http_contract -- -
 恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
 
 完整检查结果见[实现状态](../docs/status.md#自动验证)。协议/网络测试通过不代替实际节点或业务恢复验收。
+
+`repair_backend` 的统一修复场景覆盖真实 Host 适配器与回环节点替身：完整会话审批、具体动作先保存、第二次变更拒绝、独立业务验收、无脚本经验、经验再次匹配、总结失败三次停止及显式重试、重开保留总结次数，以及丢失执行回执后的 Unknown 核实。替身不证明实际提供方、脚本沙箱或真实业务恢复。

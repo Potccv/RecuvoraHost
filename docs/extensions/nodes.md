@@ -118,3 +118,9 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
 cursor 回显请求游标，初次为 null；generation 表示来源代次，sequence 在代次内单调递增。coverage 只接受 `complete/partial`；空完整批次不代表目标健康，部分覆盖、失联与过期均不能推出恢复。Host 按配置规则读取 value，并独立验证身份、顺序、时效与覆盖。详细配置见[监控说明](../monitoring.md)和[监控模块](../../src/monitoring/README.md)。
 
 获准插件可发送 `method: "service.call"` 的 callback，params 为 `node_id`、`contract`、`version`、`method`、`params`。Host 只访问插件 `allow_nodes` 中的节点及明确获准的只读方法；回复使用相同 callback ID。该入口不能调用修复执行方法，也不能隐式授权其他业务。
+
+## Harness 修复会话的动作绑定
+
+Host 可在显式 `repair_with_harness` 委托下，通过 Harness 的 `apply_repair` 工具调用已有 `recuvora.repair` v1 `execute_script` 方法。请求仍包含 `request_id` 与完整 `operation`；动作的 `kind` 为 `execute_script`，新增 `action.repair_authorization` 保存完整已审批会话操作，外层 operation_id 与会话相同。Host 在发送前持久保存具体脚本，最多派发一次；节点仍按 operation_id 幂等并提供独立 reconcile/verify，不从 Harness 文本判断恢复。节点必须在自身目标沙箱内校验请求，未知附加业务字段不应被解释为扩大权限。
+
+总结使用现有 Harness `run` 方法和无工具会话，结果由 Host 解析，不新增节点方法。脚本候选与本次已执行动作分别记录，候选不能凭模型评估被标记为通过验收。

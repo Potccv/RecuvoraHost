@@ -89,6 +89,15 @@ pub type RecoveryFuture<'a, T> =
 /// returns if it fails to release early; it cannot perform that final validation
 /// on behalf of a custom backend.
 pub trait RepairBackend: Send + Sync {
+    /// Read-only post-repair reflection; failure must never rerun the repair.
+    fn summarize(
+        &self,
+        _job: recuvora_core::recovery::workflow::ExperienceJob,
+        _config: RecoveryConfig,
+        _cancellation: Cancellation,
+    ) -> RecoveryFuture<'_, recuvora_core::recovery::knowledge::ExperienceReport> {
+        Box::pin(async { Err(service("experience summary backend unavailable")) })
+    }
     fn inspect<'a>(
         &'a self,
         target: &'a TargetBinding,

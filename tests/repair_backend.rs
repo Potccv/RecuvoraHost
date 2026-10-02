@@ -24,10 +24,22 @@ static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> TestResult {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(Box::pin(run()))
+        .build()?;
+    for mode in [
+        "unified",
+        "unified-summary-failure",
+        "unified-lost-receipt",
+        "unified-backend-error",
+        "unified-invalid-trace",
+    ] {
+        runtime.block_on(Box::pin(unified_repair(mode)))?;
+    }
+    for mode in ["good", "lost-receipt"] {
+        runtime.block_on(Box::pin(managed_http(mode)))?;
+    }
+    runtime.block_on(Box::pin(run()))
 }
 
 struct TestDir {
@@ -97,6 +109,7 @@ fn verification_input(target: TargetBinding) -> VerificationInput {
             action: json!({"kind":"execute_script"}),
         },
         receipt: ScriptReceipt {
+            execution_trace: Vec::new(),
             operation_id: "operation-fixture".into(),
             target_id: "target".into(),
             outcome: ScriptOutcome::Executed,
@@ -275,8 +288,6 @@ impl IncidentGuard for FixtureIncidentGuard {
 }
 
 async fn run() -> TestResult {
-    Box::pin(managed_http("good")).await?;
-    Box::pin(managed_http("lost-receipt")).await?;
     let (adapter, harnesses, extensions, server) = backend("good").await?;
     let config = config();
     let observed = adapter.inspect(&config.target, Cancellation::new()).await?;
@@ -360,6 +371,7 @@ async fn run() -> TestResult {
     server.shutdown()?;
     for mode in ["lost-receipt", "wrong-result-check", "unknown-result-check"] {
         let (adapter, harnesses, extensions, server) = backend(mode).await?;
+
         let dir = TestDir::new()?;
         let recovery =
             RecoveryService::open(dir.path.join("recovery"), config.clone(), adapter.clone())?;
@@ -479,6 +491,7 @@ async fn run() -> TestResult {
     }
     for mode in ["stale-age", "age-overflow", "rtt-expired"] {
         let (adapter, harnesses, extensions, server) = backend(mode).await?;
+
         assert!(
             adapter
                 .inspect(&config.target, Cancellation::new())
@@ -935,7 +948,10 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                 assert_eq!(params["operation"]["action"]["script"]["source"], "exit 0");
                 if matches!(
                     mode,
-                    "lost-receipt" | "wrong-result-check" | "unknown-result-check"
+                    "lost-receipt"
+                        | "wrong-result-check"
+                        | "unknown-result-check"
+                        | "unified-lost-receipt"
                 ) {
                     session.write(Message::Result {
                         id,
@@ -963,12 +979,59 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
                     .ok_or("missing exact review context")?
                     .1,
             )?;
-            assert_eq!(
-                context["request"]["operation"]["action"]["script"]["source"],
-                "exit 0"
-            );
+            if mode.starts_with("unified") {
+                assert_eq!(
+                    context["request"]["operation"]["action"]["kind"],
+                    "repair_with_harness"
+                );
+            } else {
+                assert_eq!(
+                    context["request"]["operation"]["action"]["script"]["source"],
+                    "exit 0"
+                );
+            }
             assert_eq!(context["current_observation"]["facts"]["release"], "v1");
             json!({"request_id":context["request"]["request_id"],"decision":"approve","reason":"exact fixture scope reviewed"}).to_string()
+        } else if mode.starts_with("unified") {
+            let tools = params["tools"].as_array().ok_or("missing tools")?;
+            if tools.is_empty() {
+                assert!(
+                    params["prompt"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("Summarize the ACTUAL")
+                );
+                if mode == "unified-summary-failure" {
+                    "invalid report".into()
+                } else {
+                    json!({"summary":"Repair observation", "lessons":"Interactive repair requires current context", "related_experience_ids":[], "assessment":"not_suitable", "reason":"Context dependent", "script":null}).to_string()
+                }
+            } else {
+                assert_eq!(tools.len(), 2);
+                assert_eq!(tools[1]["name"], "apply_repair");
+                let request: Value = serde_json::from_str(
+                    params["prompt"]
+                        .as_str()
+                        .unwrap()
+                        .rsplit_once("Request: ")
+                        .unwrap()
+                        .1,
+                )?;
+                assert_eq!(request["summarize_experience"], true);
+                for index in 0..2 {
+                    session.write(Message::Callback { id: format!("repair-callback-{index}"), parent_id: id.clone(), method: "tool".into(),
+                        params: json!({"harness_id":"remote", "thread_id":"execution-thread", "turn_id":"turn-1", "call_id":format!("repair-call-{index}"), "tool":"apply_repair", "arguments":{"language":"powershell","source":"exit 0","preconditions":{"release":"v1"}}}) })?;
+                    match session.read()? {
+                        Some(Message::Result { result, .. }) => assert_eq!(
+                            result["success"],
+                            json!(index == 0 && mode != "unified-lost-receipt"),
+                            "{result}"
+                        ),
+                        _ => return Err("missing repair tool result".into()),
+                    }
+                }
+                "Model claims success, but Host must use the independent executor receipt".into()
+            }
         } else {
             assert_eq!(params["workspace"]["workspace_id"], "work");
             let tools = params["tools"].as_array().ok_or("missing tools")?;
@@ -1019,5 +1082,172 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
     };
     session.write(Message::Result { id, result })?;
     let _ = session.read()?;
+    Ok(())
+}
+
+/// Inject failure after the real adapter has durably prepared and sent its action.
+struct PostExecutionFault {
+    inner: Arc<NodeRepairBackend>,
+    invalid_trace: bool,
+}
+impl RepairBackend for PostExecutionFault {
+    fn inspect<'a>(
+        &'a self,
+        target: &'a TargetBinding,
+        cancel: Cancellation,
+    ) -> RecoveryFuture<'a, TargetObservation> {
+        self.inner.inspect(target, cancel)
+    }
+    fn diagnose(
+        &self,
+        input: DiagnosisInput,
+        cancel: Cancellation,
+    ) -> RecoveryFuture<'_, RepairPlan> {
+        self.inner.diagnose(input, cancel)
+    }
+    fn review(&self, input: ReviewInput, cancel: Cancellation) -> RecoveryFuture<'_, ReviewOutput> {
+        self.inner.review(input, cancel)
+    }
+    fn execute<'a>(
+        &'a self,
+        script: AuthorizedScript<'a>,
+        cancel: Cancellation,
+    ) -> RecoveryFuture<'a, ScriptReceipt> {
+        Box::pin(async move {
+            let mut receipt = self.inner.execute(script, cancel).await?;
+            if self.invalid_trace {
+                receipt.execution_trace.clear();
+                Ok(receipt)
+            } else {
+                Err(RecoveryError::Service(
+                    "backend failed after dispatch".into(),
+                ))
+            }
+        })
+    }
+    fn verify(
+        &self,
+        input: VerificationInput,
+        cancel: Cancellation,
+    ) -> RecoveryFuture<'_, BusinessVerification> {
+        self.inner.verify(input, cancel)
+    }
+    fn summarize(
+        &self,
+        job: recuvora_core::recovery::workflow::ExperienceJob,
+        config: RecoveryConfig,
+        cancel: Cancellation,
+    ) -> RecoveryFuture<'_, recuvora_core::recovery::knowledge::ExperienceReport> {
+        self.inner.summarize(job, config, cancel)
+    }
+}
+
+async fn unified_repair(mode: &str) -> TestResult {
+    let (adapter, harnesses, extensions, server) = backend(mode).await?;
+
+    let dir = TestDir::new()?;
+    let mut settings = config();
+    settings.approval.allowed_action_kinds = vec!["repair_with_harness".into()];
+    let service_backend: Arc<dyn RepairBackend> =
+        if matches!(mode, "unified-backend-error" | "unified-invalid-trace") {
+            Arc::new(PostExecutionFault {
+                inner: adapter.clone(),
+                invalid_trace: mode == "unified-invalid-trace",
+            })
+        } else {
+            adapter.clone()
+        };
+    let recovery =
+        RecoveryService::open(dir.path.join("unified"), settings.clone(), service_backend)?;
+    recovery.bind_target_ownership(Arc::new(FileTargetOwnership::open(
+        dir.path.join("ownership"),
+    )?))?;
+    recovery.bind_incident_guard(Arc::new(FixtureIncidentGuard))?;
+    let task = recovery.submit(problem())?;
+
+    let mut task = recovery.advance(&task.id, Cancellation::new()).await?;
+    assert!(task.plan.is_none());
+
+    if matches!(
+        mode,
+        "unified-lost-receipt" | "unified-backend-error" | "unified-invalid-trace"
+    ) {
+        assert_eq!(task.stage, RecoveryStage::Unknown);
+        assert_eq!(task.receipt.as_ref().unwrap().execution_trace.len(), 1);
+        task = adapter
+            .check_task_result(
+                &recovery,
+                &task.id,
+                task.revision,
+                "operator".into(),
+                Cancellation::new(),
+            )
+            .await?;
+        assert_eq!(task.stage, RecoveryStage::Completed);
+    } else {
+        assert_eq!(task.stage, RecoveryStage::Completed, "{:?}", task.note);
+    }
+    assert_eq!(task.receipt.as_ref().unwrap().execution_trace.len(), 1);
+    if mode == "unified-summary-failure" {
+        for _ in 0..4 {
+            recovery.summarize_pending(Cancellation::new()).await?;
+        }
+        let jobs = recovery.pending_experiences()?;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].attempt, 3);
+        assert!(jobs[0].last_error.is_some());
+        assert_eq!(
+            recovery.query(&task.id)?.unwrap().stage,
+            RecoveryStage::Completed
+        );
+        recovery.shutdown().await?;
+        let restored = RecoveryService::open(dir.path.join("unified"), settings, adapter.clone())?;
+        assert_eq!(restored.pending_experiences()?[0].attempt, 3);
+        restored.retry_experiences(Cancellation::new()).await?;
+        assert_eq!(restored.pending_experiences()?[0].attempt, 4);
+        restored.shutdown().await?;
+    } else {
+        recovery.summarize_pending(Cancellation::new()).await?;
+
+        let mut conditions = current_facts();
+        conditions.insert("fault_fingerprint".into(), "workload-failure".into());
+        conditions.insert("platform".into(), "windows".into());
+        let query = KnowledgeQuery {
+            conditions,
+            keywords: vec!["failure".into()],
+            limit: 4,
+        };
+        assert!(!recovery.experiences(&query)?.is_empty());
+        assert!(recovery.knowledge(&query)?.is_empty());
+        let mut next = problem();
+        next.incident_id = "next-unified-incident".into();
+
+        let next = recovery.submit(next)?;
+
+        let next = recovery.advance(&next.id, Cancellation::new()).await?;
+        assert!(
+            !next.operation.as_ref().unwrap().action["request"]["experiences"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        if next.stage == RecoveryStage::Unknown {
+            adapter
+                .check_task_result(
+                    &recovery,
+                    &next.id,
+                    next.revision,
+                    "operator".into(),
+                    Cancellation::new(),
+                )
+                .await?;
+        }
+
+        recovery.shutdown().await?;
+    }
+    harnesses.shutdown().await?;
+    extensions.shutdown().await?;
+    server.shutdown()?;
     Ok(())
 }

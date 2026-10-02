@@ -21,7 +21,7 @@ Core 当前没有 HostSettings/CoreSettings、网络客户端、HarnessRegistry�
 | Host `runtime::operation::{Cancellation, CallScope}` | 管理 Harness、扩展、监控和恢复流程调用的取消与结束等待 |
 | Host `persistence::incidents::IncidentStore` / Core `IncidentLedger` | 同时保存观察读取位置和故障，全部成功或全部失败；HTTP 查询和确认故障时核对记录版本号（revision） |
 | Host `ApprovalStore` / Core `ApprovalLedger`、`ExecutionPermit` | 自动恢复流程使用审批与一次性许可；旧文本修复复用审批服务 |
-| `RepairBackend` | `NodeRepairBackend` 实现 inspect/diagnose/review/execute/verify |
+| `RepairBackend` | `NodeRepairBackend` 实现 inspect/review/execute/verify/summarize；diagnose 保留用于旧脚本流程 |
 | `IncidentGuard` | `MonitorIncidentGuard` 在监控同步锁内核对故障是否仍有效 |
 | `TargetOwnership` | HostRuntime 从显式共享 ownership_dir 打开 Host 的 FileTargetOwnership，绑定规范目标与恢复存储；非终态、Unknown 和不确定提交的持久所有者由 Host 保留 |
 | Host `RecoveryService` / Core `RecoveryState` | HostRuntime 按配置启动；HTTP 使用 query/tasks/approval/decide_human/resume/check_result/knowledge |

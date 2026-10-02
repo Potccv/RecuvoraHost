@@ -40,12 +40,12 @@
         "human_wait_secs": 600,
         "review_timeout_secs": 120
       },
-      "delegation": "Review bounded external actions for the configured target and require the configured business verification.",
+      "delegation": "Authorize a bounded Harness repair session for the configured target, with read-only inspection and at most one scoped external repair action; require independent business verification.",
       "allowed_targets": [
         "target"
       ],
       "allowed_action_kinds": [
-        "execute_script"
+        "repair_with_harness"
       ],
       "ttl_secs": 1800
     },

@@ -45,3 +45,5 @@ triggers 为 1–64 项可信固定绑定，包含 monitor_id、rule_id、finger
 旧文本修复入口支持 human 与 harness，拒绝需要定时转交的 human_then_harness；查看与管理已有记录仍可使用。显式自动恢复流程支持三种 Core 审批规则，到期审核由恢复流程调度器调度，不降级或隐式放行。
 
 Core 0.2 的内层 `recovery` 不再包含 `max_journal_bytes`，旧字段会被拒绝，模板已移除。Host 恢复事件日志使用 256 MiB 固定上限；审批和知识日志的字节上限仍分别由 `approval_store.max_journal_bytes` 和 `knowledge_store.max_journal_bytes` 配置。已有日志的可信配置不能通过直接修改配置文件变更。旧格式不会在启动时自动迁移，导入边界见 [持久化说明](../src/persistence/README.md)。
+
+统一恢复的新委托类型为 `repair_with_harness`，由 `recovery.approval.allowed_action_kinds` 显式允许。旧 `execute_script` 配置继续使用脚本兼容路径，`script_approval`、`minimum_script_occurrences` 和 `max_diagnoses` 保留用于该路径；统一入口不按故障轮次自动跳过 Harness。`action_timeout_secs` 限制修复会话，`diagnosis_timeout_secs` 也用于独立总结。原配置参与持久内容绑定，不能修改旧配置后直接重放已有日志；迁移不得删除历史或绕过目标所有权。

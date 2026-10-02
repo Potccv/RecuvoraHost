@@ -46,6 +46,8 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:7431/api/v1/bootstrap' -Headers @{ Auth
 
 批准、请求接受和动作回执分别表示不同事实。执行前由 Core 复核完整操作并发放一次许可；执行和审核使用独立会话。`Unknown` 表示外部执行结果无法确定，不能自动重放或通过更换状态目录绕过。完整规则见 [审批](docs/approval.md)与 [恢复流程](docs/recovery.md)。
 
+统一恢复模板采用带经验参考的 Harness 修复会话，业务结果确认后独立总结经验并评估可选脚本。原脚本委托不自动扩大权限，配置和兼容路径见[恢复流程](docs/recovery.md)。
+
 ## 文档与开发
 
 [文档索引](docs/README.md)按使用、设计和扩展接入组织详细说明：

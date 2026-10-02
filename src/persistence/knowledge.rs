@@ -10,6 +10,7 @@ use thiserror::Error;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 enum StoredCommand {
+    RecordExperience(RepairExperience),
     ExpandCapacity {
         expected: KnowledgeConfig,
         target: KnowledgeConfig,
@@ -30,6 +31,9 @@ enum StoredCommand {
 impl StoredCommand {
     fn trusted(self) -> Result<KnowledgeCommand, KnowledgeError> {
         Ok(match self {
+            Self::RecordExperience(item) => {
+                KnowledgeCommand::RecordExperience(TrustedRepairExperience::attest(item)?)
+            }
             Self::ExpandCapacity { expected, target } => {
                 KnowledgeCommand::ExpandCapacity { expected, target }
             }
@@ -171,6 +175,11 @@ impl KnowledgeStore {
         let receipt = self.journal.commit(pending.request(), payload)?;
         self.state = pending.confirm(receipt)?.state;
         Ok(())
+    }
+    pub fn record_experience(&mut self, record: RepairExperience) -> Result<(), KnowledgeError> {
+        self.commit(KnowledgeCommand::RecordExperience(
+            TrustedRepairExperience::attest(record)?,
+        ))
     }
     pub fn upsert_candidate(
         &mut self,
