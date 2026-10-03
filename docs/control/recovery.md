@@ -1,6 +1,6 @@
 # 恢复接入
 
-Host 将活动故障提交给 Core RecoverySession；RecoveryScheduler 安排驱动时机，RecoveryService 在 CallScope 内调用 RecoveryEngine。具体阶段判断、审批发起、执行编排、验收结果及经验重试由 Core 决定。
+Host 将 Node 实时错误日志提交给 Core RecoverySession，Core 不复判日志活跃性；RecoveryScheduler 安排驱动时机，RecoveryService 在 CallScope 内调用 RecoveryEngine。具体阶段判断、审批发起、执行编排、验收结果及经验重试由 Core 决定。
 
 Host 实现当前时间、状态查询、提交、观察、审核、目标保护、执行、验收和总结能力。能力返回可信身份与证据；网络地址、平台、语言、工作区和连接配置保留在 Host。
 

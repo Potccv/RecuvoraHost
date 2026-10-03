@@ -25,7 +25,7 @@
 
 Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供错误收件及独立领域存储，自动恢复服务保存单一聚合日志；Host IncidentLedger 保存不可变错误收据与来源覆盖记录，Core RecoveryEngine/RecoverySession 计算完整恢复变化，可靠提交后才确认提案并取得 `ExecutionPermit` 和后续意图；模型与插件拿不到核心状态存储或自行构造执行许可的入口。`cli` 与 `presentation` 是内部模块，外部应用使用上述公开服务。
 
-`RecoveryScheduler::start(recovery, monitor, interval)` 将已配置目标的每条错误收据交给 Core，不接收 Host 触发规则。`MonitorIncidentGuard::new(monitor)` 验证原始收据身份、内容与 revision，并返回 `IncidentReadiness::Received`。Core 的 `ProblemContext` 使用 `origin: ErrorLog`、完整原文 `summary` 及 `report: ErrorLogEvidence`；历史日志的存在不等于当前故障仍然活动。低层 `Incident` 来源仍需独立权威提供活动事实，不能冒用收到日志替代。
+`RecoveryScheduler::start(recovery, monitor, interval)` 将已配置目标的每条错误收据交给 Core，不接收 Host 触发规则。`MonitorIncidentGuard::new(monitor)` 验证原始收据身份、内容与 revision，并返回 `IncidentReadiness::Received`。Core 的 `ProblemContext` 使用 `origin: ErrorLog`、完整原文 `summary` 及 `report: ErrorLogEvidence`；Node 保证错误的实时性，Core 只校验报告身份、版本和内容，不判断日志活跃性。Core `IncidentEvidence.active/received` 仅保留既有持久数据的序列化绑定，不参与受理、授权或派发判定；`origin` 区分报告数据形状。Host 的收据保护和运行实例检查继续有效。
 
 协议类型与校验接口见 [Protocol Rust API](protocol.md)，应用职责与关闭顺序见 [架构](../architecture.md)。外部节点使用 [语言无关协议规范](../extensions/protocol.md)，不依赖本库。
 

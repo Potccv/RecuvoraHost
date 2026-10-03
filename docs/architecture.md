@@ -10,7 +10,7 @@ Node 识别错误并提供错误日志，Host 校验、持久接收并将完整�
 | Host [control](../src/control/README.md) | IncidentLedger 不可变错误收件、来源覆盖记录与读取检查点 |
 | Host persistence | 配置和日志绑定、版本比较、可靠同步、提交确认 |
 | Host [application](../src/application/README.md) | 服务所有权、应用操作受理、持久回执、去重、容量、取消及关闭 |
-| Host [recovery](../src/recovery/README.md) | 实现 Core 能力接口，管理聚合日志、当前故障门、实际派发保护及受管调度 |
+| Host [recovery](../src/recovery/README.md) | 实现 Core 能力接口，管理聚合日志、收件绑定、实际派发保护及受管调度 |
 | Host boot/configuration | 可信装配、配置加载与控制路径保护 |
 | Host runtime | 通用取消与在途监督，以及可信模块的生命周期框架 |
 | Host protocol/integrations | 有界网络消息、schema、TLS、路由、节点和 Harness 适配 |
@@ -33,7 +33,7 @@ configuration 不依赖 boot，application 不依赖 server 或 Axum。recovery 
 
 错误收件与游标在同一事务保存；每条日志有独立稳定身份，同身份改写拒绝。收件后唤醒恢复调度，将原文、来源身份及原始证据传入 Core 的 ErrorLog 问题报告；Core 忙时留存待交付，重启按原身份继续，不重复创建任务。Host 没有健康规则、错误级别筛选或日志文本诊断。HTTP 日志查询只读取同一持久收件，不另外从节点采集。
 
-Host 保持收件身份保护、目标所有权和最终网络发送复核；Core 的许可不替代物理保护。Received 只证明报告已可靠接收，不是当前目标不健康或执行许可。Core 继续获取独立观察、审批、执行与验收；空错误批次和来源失联都不解除错误或证明恢复。
+Node 保证上报的是已识别的实时错误，Host/Core 不再查询或判断日志是否活跃。Host 保持收件身份保护、目标所有权和最终网络发送复核；Core 接收报告后进入既有经验匹配与恢复流程。目标观察采集环境和执行前提，不用于复判日志活跃状态；审批、一次许可和独立业务验收继续约束执行。空错误批次和来源失联不清除收件或证明恢复。
 
 ## 服务入口和关闭
 

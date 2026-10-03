@@ -17,7 +17,7 @@
 
 调度启动先扫描持久错误收件，收到持久提交通知后立即继续扫描，将完整原文、原始证据和来源身份以 Core `ProblemOrigin::ErrorLog` 递交。相同收件身份只创建一个任务；目标忙时保留未交付收件，当前任务终态后立即重试，重启继续从持久收件扫描。周期轮询提供补偿，不承担业务诊断或错误筛选。
 
-`MonitorIncidentGuard` 比对完整报告与持久收件并验证来源运行实例，在注册和实际发送期间保护该绑定。`IncidentReadiness::Received` 只证明可靠接收，不宣称当前目标不健康；原始历史年龄和人工确认不撤销报告，也不授予执行权限。Core 仍要求独立观察、审批、一次许可与业务验收，Unknown 继续保留目标归属。
+`MonitorIncidentGuard` 比对完整报告与持久收件并验证来源运行实例，在注册和实际发送期间保护该绑定。`IncidentReadiness::Received` 表示报告已可靠接收。Node 保证上报实时错误，Core 不读取 active/received 作业务判断，直接进入既有经验匹配和恢复流程；收件年龄和人工确认不撤销报告。目标观察用于采集环境和执行前提，审批、一次许可与业务验收继续约束执行，Unknown 继续保留目标归属。
 
 `RepairActionGuard` 负责已批准会话中的具体动作提交；通用网络 `DispatchGuard` 只提供发送前验证与释放。二者共享同一派发门，动作提交不能产生第二次执行许可。节点、Harness、执行器配置与总结输入适配见[恢复集成](../integrations/recovery/README.md)。旧的 `integrations::recovery` 公开导入路径继续重导出本模块服务。
 

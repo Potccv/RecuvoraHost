@@ -36,7 +36,7 @@ Host 从节点取得执行回执，模型最终文本不能声明执行成功。
 
 ## 故障与暂停任务
 
-每条 Node 错误独立持久接收，调度器被收件通知唤醒后，将同目标错误提交为 `ProblemContext { origin: error_log, summary: 原文, report: 原始来源与证据 }`。fingerprint 来自 Node 描述，稳定 conditions 来自可信目标配置；Host 不做错误分类、健康阈值或 monitor/rule 筛选。Core 的 Received 语义仅确认报告存在，后续仍独立观察、审批、执行和验收，不把历史日志解释为当前健康状态。
+每条 Node 错误独立持久接收，调度器被收件通知唤醒后，将同目标错误提交为 `ProblemContext { origin: error_log, summary: 原文, report: 原始来源与证据 }`。fingerprint 来自 Node 描述，稳定 conditions 来自可信目标配置；Host 不做错误分类、健康阈值或 monitor/rule 筛选。Node 保证上报实时错误，Core 不检查 active/received，也不查询日志是否活跃，直接进入既有经验匹配与恢复流程。目标观察用于采集环境和执行前提；审批、一次许可和独立业务验收继续约束执行。
 
 Core 忙时错误保留在持久收件，前一任务终态后继续交付。收件与 Core 任务使用稳定身份，即使提交后中断、重复读取或重启，也不重复创建同一任务；不同错误不会并入旧终态任务。空错误批次、采集不完整或失联不清除已接收日志，也不代替业务验收。暂停和 Unknown 不会自动重执行。
 
