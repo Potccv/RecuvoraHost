@@ -10,6 +10,8 @@ use serde_json::json;
 fn job() -> ExperienceJob {
     let facts = BTreeMap::from([("release".into(), "v1".into())]);
     let problem = ProblemContext {
+        origin: Default::default(),
+        report: None,
         incident_id: "incident".into(),
         incident_revision: 1,
         target_id: "target".into(),
@@ -211,4 +213,31 @@ fn omission_metadata_remains_budgeted_when_an_earlier_field_nearly_fills_the_pro
         );
     }
     assert!(included > 0 && omitted > 0);
+}
+
+#[test]
+fn error_report_origin_and_original_evidence_reach_the_summary_context() {
+    let mut job = job();
+    job.task.problem.origin = ProblemOrigin::ErrorLog;
+    job.task.problem.summary = "Original Node error\nsecond line".into();
+    job.task.problem.report = Some(ErrorLogEvidence {
+        source_id: "source".into(),
+        generation: "generation-1".into(),
+        record_id: "error-1".into(),
+        sequence: 1,
+        age_ms: 60_000,
+        evidence: json!({"trace":"original trace","details":{"code":42}}),
+    });
+    let before = serde_json::to_value(&job).unwrap();
+    let result = build_summary_prompt(&job, "Evidence: ", 64 * 1024).unwrap();
+    let context: Value =
+        serde_json::from_str(result.prompt.strip_prefix("Evidence: ").unwrap()).unwrap();
+    assert_eq!(context["fault"]["origin"], "error_log");
+    assert_eq!(context["fault"]["summary"], job.task.problem.summary);
+    assert_eq!(
+        context["fault"]["report"],
+        before["task"]["problem"]["report"]
+    );
+    assert!(result.omitted_fields.is_empty());
+    assert_eq!(serde_json::to_value(&job).unwrap(), before);
 }

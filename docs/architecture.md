@@ -1,20 +1,20 @@
 # Host 架构
 
-Core 主导恢复业务流程；Host 提供故障、可信事实、持久化、Harness/节点能力、认证及运行生命周期。依赖方向是 Host → Core，运行时由 Core 调用 Host 注入的能力。
+Node 识别错误并提供错误日志，Host 校验、持久接收并将完整错误报告交给 Core。Core 主导后续恢复流程；Host 提供持久化、Harness/节点能力、认证及运行生命周期。依赖方向是 Host → Core，运行时由 Core 调用 Host 注入的能力。
 
 ## 模块职责
 
 | 组件 | 责任 |
 | --- | --- |
 | Core RecoveryEngine / RecoverySession | 经验匹配、审批、执行编排、验收判定、经验生成与原子领域提案 |
-| Host [control](../src/control/README.md) | IncidentLedger 故障台账与监控检查点 |
+| Host [control](../src/control/README.md) | IncidentLedger 不可变错误收件、来源覆盖记录与读取检查点 |
 | Host persistence | 配置和日志绑定、版本比较、可靠同步、提交确认 |
 | Host [application](../src/application/README.md) | 服务所有权、应用操作受理、持久回执、去重、容量、取消及关闭 |
 | Host [recovery](../src/recovery/README.md) | 实现 Core 能力接口，管理聚合日志、当前故障门、实际派发保护及受管调度 |
 | Host boot/configuration | 可信装配、配置加载与控制路径保护 |
 | Host runtime | 通用取消与在途监督，以及可信模块的生命周期框架 |
 | Host protocol/integrations | 有界网络消息、schema、TLS、路由、节点和 Harness 适配 |
-| Node/插件 | 实际采集、动作执行、执行者监督与独立业务验收 |
+| Node/插件 | Node 采集和识别错误、提供错误日志、动作执行、执行者监督与独立业务验收；插件提供契约及展示描述 |
 | UI/CLI/HTTP | 认证后的查询与管理请求，不产生权威事实 |
 
 ## 应用依赖与装配
@@ -31,7 +31,9 @@ configuration 不依赖 boot，application 不依赖 server 或 Axum。recovery 
 
 `RecoverySession` 的完整提案保存到单一 `recovery.jsonl`；审批和任务的相关变化一起确认。恢复模块内部将聚合存储、Core Platform、派发门和公开服务分开实现，仍共享同一聚合所有者与提交边界。`dispatch.jsonl` 单独保存 Host 的物理派发边界；它不参与业务阶段决策，只为中断后独立证明尚未派发提供依据。具体要求见[提交与历史](control/commits.md)。
 
-Host 保持当前故障保护、目标所有权和最终网络发送复核；Core 的许可不替代物理保护。模型只提供建议，实际执行和独立验收事实经 Core 判定后形成结果。业务阶段与权威规则由 Core 维护，Host 不复制这些实现。
+错误收件与游标在同一事务保存；每条日志有独立稳定身份，同身份改写拒绝。收件后唤醒恢复调度，将原文、来源身份及原始证据传入 Core 的 ErrorLog 问题报告；Core 忙时留存待交付，重启按原身份继续，不重复创建任务。Host 没有健康规则、错误级别筛选或日志文本诊断。HTTP 日志查询只读取同一持久收件，不另外从节点采集。
+
+Host 保持收件身份保护、目标所有权和最终网络发送复核；Core 的许可不替代物理保护。Received 只证明报告已可靠接收，不是当前目标不健康或执行许可。Core 继续获取独立观察、审批、执行与验收；空错误批次和来源失联都不解除错误或证明恢复。
 
 ## 服务入口和关闭
 

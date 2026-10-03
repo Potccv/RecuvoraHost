@@ -1,10 +1,8 @@
 //! Host storage, scheduling and control configuration.
 use crate::persistence::approval::ApprovalStoreConfig;
 use crate::persistence::knowledge::KnowledgeStoreConfig;
-use crate::recovery::IncidentTrigger;
 use crate::recovery::{CanonicalTarget, RecoveryConfig, RecoveryError};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -16,7 +14,6 @@ pub struct RecoveryHostConfig {
     pub ownership_dir: PathBuf,
     pub recovery: RecoveryConfig,
     pub executor: crate::integrations::recovery::ScriptExecutorConfig,
-    pub triggers: Vec<IncidentTrigger>,
     pub interval_ms: u64,
     #[serde(default)]
     pub approval_store: ApprovalStoreConfig,
@@ -38,21 +35,10 @@ impl RecoveryHostConfig {
         self.knowledge_store
             .validate()
             .map_err(|e| RecoveryError::Invalid(e.to_string()))?;
-        if self.schema_version != 2
-            || !(10..=3_600_000).contains(&self.interval_ms)
-            || self.triggers.is_empty()
-            || self.triggers.len() > 64
-        {
+        if self.schema_version != 3 || !(10..=3_600_000).contains(&self.interval_ms) {
             return Err(RecoveryError::Invalid(
-                "invalid Host recovery schema, interval or triggers".into(),
+                "expected Host recovery schema 3 and interval 10..3600000ms".into(),
             ));
-        }
-        let mut bindings = BTreeSet::new();
-        for trigger in &self.triggers {
-            trigger.validate()?;
-            if !bindings.insert((&trigger.monitor_id, &trigger.rule_id)) {
-                return Err(RecoveryError::Invalid("duplicate recovery trigger".into()));
-            }
         }
         Ok(())
     }

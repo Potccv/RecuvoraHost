@@ -4,18 +4,18 @@ fn declaration() -> Value {
     json!({
         "schema_version":1,
         "title":"Example",
-        "summary":"Host-owned samples only",
+        "summary":"Host-owned error receipts only",
         "sections":[{
             "id":"status",
             "title":"Status",
             "monitor_role":"primary",
             "fields":[{
-                "id":"ready",
-                "label":"Ready",
-                "source":"last_value",
-                "pointer":"/ready",
-                "format":"boolean",
-                "empty":"Not observed"
+                "id":"message",
+                "label":"Error message",
+                "source":"last_error_log",
+                "pointer":"/message",
+                "format":"text",
+                "empty":"No error received"
             }]
         }]
     })
@@ -59,6 +59,10 @@ fn plugin_view_schema_is_closed_and_bounded() {
     let mut unknown = declaration();
     unknown["html"] = json!("<script>ignored</script>");
     assert!(validate_view(unknown).is_err());
+
+    let mut legacy = declaration();
+    legacy["sections"][0]["fields"][0]["source"] = json!("last_value");
+    assert!(validate_view(legacy).is_err());
 
     let mut pointer = declaration();
     pointer["sections"][0]["fields"][0]["pointer"] = json!("/bad~2escape");

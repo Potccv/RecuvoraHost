@@ -45,7 +45,7 @@ ui_dir为空时页面路由返回404。配置后启动加载固定14份官方静
 | `GET /ui/catalog` | 要求 extension.read；返回 views、external_links、link_statuses，views 额外按 monitor.read 过滤 |
 | `GET /ui/plugins/{plugin_id}/views/{view_id}` | Host 校验并包装的只读 view 文档；当前实现 `monitoring_v1` |
 | `POST /ui/plugins/{plugin_id}/links/refresh` | `{}`；要求 extension.read；显式刷新插件页面描述，返回快照及 auto_retry:false |
-| `GET /monitors/{id}/logs` | 配置绑定的观测记录流；要求monitor.read、logs.read和extension.read |
+| `GET /monitors/{id}/logs` | Host 已持久接收的 Node 错误回执；要求monitor.read、logs.read和extension.read |
 | `GET /incidents`、`/incidents/{id}` | 故障摘要与完整证据；要求incident.read |
 | `POST /incidents/{id}/acknowledge` | revision、note；要求incident.read与incident.acknowledge |
 | `GET /recovery/status` | 恢复流程调度器的 running 与 last_error；要求 recovery.read |
@@ -67,7 +67,7 @@ decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revi
 
 修复经验搜索是只读 POST，不创建 operation。conditions 为 1–32 项准确条件，keywords 最多 32 项，limit 为 1–100；匹配规则由 Core KnowledgeQuery 决定。经验记录只通过 `experiences` 数组返回，元素为完整 `RepairExperience`，包含结果、证据、实际 `actions` 和总结报告。失败和 Unknown 仍作为明确标记的负面参考返回；按记录时间降序、ID 升序排序后应用 limit。实际动作版本隔离不会删除负面经验，结果核实也不会解除永久隔离。候选和经验均不授予执行权限。
 
-恢复流程的 submit/advance 由可信恢复流程调度器使用固定故障触发策略，不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 提供独立文本修复视图，不混入自动恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
+恢复流程的 submit/advance 由可信恢复流程调度器管理：已配置目标的 Node 错误报告在持久接收后按原文与来源身份交给 Core，Host 不设置故障触发筛选策略；不开放客户端上传 ProblemContext、脚本或规则。`/repairs` 与 `/approvals` 提供独立文本修复视图，不混入自动恢复流程记录；两者状态目录分开。流程及证据见[恢复流程说明](../recovery.md)。
 
 ## 接受、结果与重复请求
 
@@ -89,15 +89,17 @@ HTTP应用日志与 Core 审批/故障记录分别承担传输接收和业务判
 
 ## 只读视图与记录
 
-插件监控通过通用 UI catalog/view GET 接口读取；旧 monitoring 路径保留兼容。专属描述须登记并满足权限、schema和限额，失败以独立状态降级，不加载插件HTML、脚本或资源。插件描述不能覆盖 Host 健康、授权或恢复事实。
+插件监控通过通用 UI catalog/view GET 接口读取；旧 monitoring 路径保留兼容。专属描述须登记并满足权限、schema和限额，失败以独立状态降级，不加载插件HTML、脚本或资源。插件描述不能覆盖 Host 接收、授权或恢复事实。字段 source 只接受 monitor 或 last_error_log，后者指向 Node 最后一个已接收错误对象，不接受旧 last_value。监控列表与 bootstrap 不包含错误原文；单条详情和插件监控投影仅在同时具备 logs.read 时包含 last_error_log。
 
 独立页面与声明式 view 并列提供。目录保持 schema_version 1 和 views，新增 external_links 扁平入口数组及 link_statuses 插件状态数组；缺少 monitor.read 时只过滤 views，不阻止获准的外部页面读取。目录使用登记实例内快照，不触发插件调用。页面字段、URL 绑定和状态详见[独立页面契约](../extensions/pages.md#host-向-ui-提供的导航对象)。
 
 页面刷新只读取固定 describe_ui_links 描述，不创建执行 operation、审批或恢复事实。返回 `{schema_version:1,plugin:快照,auto_retry:false}`，快照带 links；200 中的 unavailable/invalid_response 仍表示描述失败且链接已撤下。忙为409，无法派发为503，未知插件为404；客户端根据响应状态显示诊断，不自动重试。插件网页由插件自行提供和鉴权，Host 不代理页面或传递操作员令牌。
 
-log_sources由可信配置限定提供方、方法、monitor_contract、固定参数/参数绑定、游标和字段映射。请求只选择已登记monitor，不允许浏览器选择任意方法或参数。普通记录和错误记录按服务配置的error_levels/error_events分类，不从文本猜测业务含义。
+`GET /monitors/{id}/logs` 只读取已登记接收实例对应的持久错误回执。Node 在错误批次中提供 fingerprint、message 和 evidence，Host 不按级别、事件或文本重新分类。服务不再接受 log_sources、字段映射或 error_levels/error_events 配置；GET 不调用 Node、不推进 Node 读取检查点、不创建 Core 任务。日志展示与恢复交付共用同一份持久收件。
 
-目标记录流每页1至32条，游标由服务关联目标、来源与连续性；失效或来源变化要求明确重读，不静默跳过。此接口不会推进监控引擎保存的读取位置，也不是原始日志上传入口。所有查询都限制返回数量与数据大小，错误不伪装成空数据。
+错误回执从最早记录开始，按不可变回执 ID 升序分页；每页 limit 为 1 至 32，总响应最多 256 KiB，大小上限可使实际页更短。items 与 errors 包含同一页错误，message 保留 Node 原文；level 固定为 ERROR 仅用于展示，event 为 Node fingerprint，node_log_id 保留 Node 身份，timestamp 是 Host 接收时间（timestamp_kind 为 received_at）。record_kind 为 node_error，full_log 固定为 false；此接口不提供普通日志或全量日志。
+
+next_cursor 是仅供 HTTP 使用的游标，绑定接收实例、target 和 source，锚定本页最后一条回执；即使当前没有记录也返回可继续读取的游标。服务最多保留 256 个游标，闲置 30 分钟、容量淘汰、重启或锚点不可用后返回 409 cursor_invalid，客户端须显式从头读取，不静默跳过错误。has_more 表示仍有已接收回执；source_error 与 coverage 来自接收状态，Node 断连不妨碍读取既有回执，空页不表示目标健康。
 
 接口约定检查范围见[测试说明](../../tests/README.md)。真实节点、跨机网络、浏览器/Tauri交互及业务恢复仍需部署验收。
 

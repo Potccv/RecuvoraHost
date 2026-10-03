@@ -1,9 +1,8 @@
 use recuvora_core::recovery::approval::{
     ApprovalDecision, ApprovalPolicy, ApprovalState, ReviewerConfig,
 };
-use recuvora_host::control::recovery::incidents::{
-    IncidentKind, IncidentRecord, IncidentStatus, SignalCondition,
-};
+use recuvora_core::recovery::workflow::ErrorLogEvidence;
+use recuvora_host::control::recovery::incidents::{IncidentKind, IncidentRecord, IncidentStatus};
 use recuvora_host::integrations::recovery::*;
 use recuvora_host::monitoring::*;
 use recuvora_host::runtime::operation::Cancellation;
@@ -12,7 +11,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -22,10 +21,6 @@ mod network_fixture;
 #[path = "workflow_support.rs"]
 mod support;
 use support::TestDir;
-
-const UNHEALTHY: u8 = 0;
-const HEALTHY: u8 = 1;
-const UNAVAILABLE: u8 = 2;
 
 #[tokio::test]
 async fn shared_target_ownership_blocks_other_stores_and_survives_pending_shutdown() {
@@ -39,7 +34,7 @@ async fn shared_target_ownership_blocks_other_stores_and_survives_pending_shutdo
         dir.path.join("monitor"),
     )
     .unwrap();
-    let incident = active_incident(&monitor.handle()).await;
+    let incident = received_error(&monitor.handle()).await;
     let context = problem(&incident);
     assert!(matches!(
         first.submit(context.clone()),
@@ -111,89 +106,71 @@ async fn drained_target_ownership_can_transfer_to_another_store() {
 }
 
 struct Source {
-    state: AtomicU8,
-    sequence: AtomicU64,
-    age_ms: u64,
+    unavailable: AtomicBool,
 }
 impl Source {
     fn new() -> Self {
         Self {
-            state: AtomicU8::new(UNHEALTHY),
-            sequence: AtomicU64::new(0),
-            age_ms: 0,
+            unavailable: AtomicBool::new(false),
         }
-    }
-    fn set(&self, state: u8) {
-        self.state.store(state, Ordering::SeqCst);
     }
 }
 impl ObservationSource for Source {
     fn poll(&self, request: ObservationRequest, _: Cancellation) -> ObservationFuture<'_> {
+        let unavailable = self.unavailable.load(Ordering::SeqCst);
         Box::pin(async move {
-            let state = self.state.load(Ordering::SeqCst);
-            if state == UNAVAILABLE {
-                return Err(MonitorError::Observation(
-                    "provider temporarily unavailable".into(),
-                ));
+            if unavailable {
+                return Err(MonitorError::Observation("source disconnected".into()));
             }
-            let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
-            Ok(ObservationBatch {
-                schema_version: 1,
+            Ok(ErrorLogBatch {
+                schema_version: 2,
                 target_id: "target-a".into(),
                 source_id: "source-a".into(),
                 generation: "generation-a".into(),
                 cursor: request.params["cursor"].as_str().map(str::to_owned),
-                next_cursor: format!("position-{sequence}"),
+                next_cursor: "cursor-1".into(),
                 coverage: BatchCoverage::Complete,
                 has_more: false,
-                error: None,
-                samples: vec![ObservationSample {
-                    id: format!("sample-{sequence}"),
-                    sequence,
-                    age_ms: self.age_ms,
-                    value: json!({"ready":state == HEALTHY}),
-                    evidence: json!({"kind":"provider-observation"}),
+                source_error: None,
+                errors: vec![NodeErrorLog {
+                    id: "error-1".into(),
+                    sequence: 1,
+                    age_ms: 86_400_000,
+                    fingerprint: "workload-error".into(),
+                    message: "ERROR original message\n  stack: 执行失败".into(),
+                    evidence: json!({"exit_code":17,"detail":{"worker":"worker-1"}}),
                 }],
             })
         })
     }
 }
-
 fn monitor_config() -> MonitorsConfig {
     MonitorsConfig {
-        schema_version: 1,
-        discoveries: vec![],
+        schema_version: 2,
+        discoveries: Vec::new(),
         monitors: vec![MonitorDefinition {
             id: "monitor-a".into(),
             target_id: "target-a".into(),
             source_id: "source-a".into(),
             view_role: None,
-            extension_id: "test-provider".into(),
-            contract: "example.monitor".into(),
+            extension_id: "provider-a".into(),
+            contract: "example.logs".into(),
             version: 1,
-            method: "observe".into(),
+            method: "errors".into(),
             params: json!({}),
             interval_ms: 10,
             timeout_ms: 100,
             stale_after_ms: 1000,
-            startup_grace_ms: 100,
-            rule: MonitorRule {
-                pointer: "/ready".into(),
-                operator: RuleOperator::Eq,
-                value: json!(true),
-                failure_samples: 1,
-                success_samples: 1,
-            },
+            startup_grace_ms: 10,
         }],
     }
 }
-
 fn config() -> RecoveryConfig {
     let policy = |id: &str, reviewer| ApprovalPolicy {
         id: id.into(),
         version: 1,
         reviewer,
-        delegation: "repair only a currently active target fault".into(),
+        delegation: "review bounded repair for the received error report".into(),
         allowed_targets: vec!["target-a".into()],
         allowed_action_kinds: vec!["repair_with_harness".into()],
         ttl_secs: 600,
@@ -295,41 +272,66 @@ async fn wait_for(mut condition: impl FnMut() -> bool) {
     .expect("bounded fixture condition");
 }
 
-async fn active_incident(handle: &MonitorHandle) -> IncidentRecord {
+async fn received_error(handle: &MonitorHandle) -> IncidentRecord {
     wait_for(|| {
-        handle.incidents().unwrap().iter().any(|record| {
-            record.kind == IncidentKind::Target
-                && record.condition == SignalCondition::Active
-                && record.status != IncidentStatus::Resolved
-        })
+        handle
+            .incidents()
+            .unwrap()
+            .iter()
+            .any(|record| record.kind == IncidentKind::ErrorLog)
     })
     .await;
     handle
         .incidents()
         .unwrap()
         .into_iter()
-        .find(|record| {
-            record.kind == IncidentKind::Target
-                && record.condition == SignalCondition::Active
-                && record.status != IncidentStatus::Resolved
-        })
+        .find(|record| record.kind == IncidentKind::ErrorLog)
         .unwrap()
 }
-
-fn problem(incident: &IncidentRecord) -> ProblemContext {
+fn problem(record: &IncidentRecord) -> ProblemContext {
+    let stored = &record.evidence;
+    let log: NodeErrorLog = serde_json::from_value(stored["log"].clone()).unwrap();
     ProblemContext {
-        incident_id: incident.id.clone(),
-        incident_revision: incident.revision,
-        target_id: incident.target_id.clone(),
-        fingerprint: "workload-not-ready".into(),
-        summary: incident.summary.clone(),
-        occurrences: 1,
-        keywords: vec!["readiness".into()],
-        conditions: BTreeMap::from([("workload_version".into(), "1".into())]),
-        evidence_refs: vec![format!("incident:{}", incident.id)],
+        origin: ProblemOrigin::ErrorLog,
+        report: Some(ErrorLogEvidence {
+            source_id: stored["source_id"].as_str().unwrap().into(),
+            generation: stored["generation"].as_str().unwrap().into(),
+            record_id: log.id,
+            sequence: log.sequence,
+            age_ms: log.age_ms,
+            evidence: log.evidence,
+        }),
+        incident_id: record.id.clone(),
+        incident_revision: record.revision,
+        target_id: record.target_id.clone(),
+        fingerprint: log.fingerprint,
+        summary: log.message,
+        occurrences: record.occurrences,
+        keywords: Vec::new(),
+        conditions: config().target.required_facts,
+        evidence_refs: vec![
+            format!("node-error:{}", stored["extension_id"].as_str().unwrap()),
+            format!("error-receipt:{}", record.id),
+        ],
     }
 }
-
+fn bind(recovery: &RecoveryService, handle: MonitorHandle) {
+    recovery
+        .bind_incident_guard(Arc::new(guard(handle)))
+        .unwrap();
+}
+fn guard(handle: MonitorHandle) -> MonitorIncidentGuard {
+    MonitorIncidentGuard::new(handle)
+}
+fn owned_recovery(dir: &TestDir, backend: Arc<Backend>) -> Arc<RecoveryService> {
+    let recovery = RecoveryService::open(dir.path.join("recovery"), config(), backend).unwrap();
+    recovery
+        .bind_target_ownership(Arc::new(
+            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
+        ))
+        .unwrap();
+    recovery
+}
 async fn pending(recovery: &Arc<RecoveryService>, incident: &IncidentRecord) -> RecoveryTask {
     let task = recovery.submit(problem(incident)).unwrap();
     let task = recovery
@@ -362,321 +364,61 @@ async fn assert_blocked(recovery: &Arc<RecoveryService>, backend: &Backend, task
     ));
 }
 
-fn bind(recovery: &RecoveryService, handle: MonitorHandle) {
-    let trigger = IncidentTrigger {
-        monitor_id: "monitor-a".into(),
-        rule_id: "monitor-a".into(),
-        fingerprint: "workload-not-ready".into(),
-        keywords: vec!["readiness".into()],
-        conditions: BTreeMap::from([("workload_version".into(), "1".into())]),
-    };
-    recovery
-        .bind_incident_guard(Arc::new(
-            MonitorIncidentGuard::new(handle, vec![trigger]).unwrap(),
-        ))
-        .unwrap();
-}
-
-fn guard(handle: MonitorHandle) -> MonitorIncidentGuard {
-    MonitorIncidentGuard::new(
-        handle,
-        vec![IncidentTrigger {
-            monitor_id: "monitor-a".into(),
-            rule_id: "monitor-a".into(),
-            fingerprint: "workload-not-ready".into(),
-            keywords: vec!["readiness".into()],
-            conditions: BTreeMap::from([("workload_version".into(), "1".into())]),
-        }],
-    )
-    .unwrap()
-}
-
 #[tokio::test]
-async fn human_approved_work_cannot_execute_after_the_incident_clears() {
-    let dir = TestDir::new("incident-guard-cleared");
-    let source = Arc::new(Source::new());
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        source.clone(),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
-    let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    bind(&recovery, handle.clone());
-    let task = pending(&recovery, &incident).await;
-    approve(&recovery, &task);
-    source.set(HEALTHY);
-    wait_for(|| handle.incident(&incident.id).unwrap().unwrap().status == IncidentStatus::Resolved)
-        .await;
-    let resolved = handle
-        .repair_incident(&incident.id, "target-a", incident.revision)
-        .unwrap();
-    assert_eq!(resolved.status, IncidentStatus::Resolved);
-    assert_blocked(&recovery, &backend, &task).await;
-    recovery.shutdown().await.unwrap();
-    monitor.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn lost_observation_coverage_prevents_consuming_old_approval() {
-    let dir = TestDir::new("incident-guard-unknown");
-    let source = Arc::new(Source::new());
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        source.clone(),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
-    let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    bind(&recovery, handle.clone());
-    let task = pending(&recovery, &incident).await;
-    approve(&recovery, &task);
-    source.set(UNAVAILABLE);
-    wait_for(|| {
-        handle.incident(&incident.id).unwrap().unwrap().condition == SignalCondition::Unknown
-    })
-    .await;
-    assert!(
-        handle
-            .repair_incident(&incident.id, "target-a", incident.revision)
-            .is_err()
-    );
-    assert_blocked(&recovery, &backend, &task).await;
-    recovery.shutdown().await.unwrap();
-    monitor.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn stopped_monitor_cannot_authorize_an_active_persisted_incident() {
-    let dir = TestDir::new("incident-guard-stopped");
+async fn immutable_receipt_rejects_forged_text_evidence_origin_and_source() {
+    let dir = TestDir::new("receipt-binding");
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
         Arc::new(Source::new()),
         dir.path.join("monitor"),
     )
     .unwrap();
-    let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
+    let record = received_error(&monitor.handle()).await;
     let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    bind(&recovery, handle.clone());
-    let task = pending(&recovery, &incident).await;
-    approve(&recovery, &task);
-    monitor.shutdown().await.unwrap();
-    assert_eq!(
-        handle.incident(&incident.id).unwrap().unwrap().condition,
-        SignalCondition::Active
-    );
-    assert!(
-        handle
-            .repair_incident(&incident.id, "target-a", incident.revision)
-            .is_err()
-    );
-    assert_blocked(&recovery, &backend, &task).await;
-    recovery.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_new_episode_cannot_reuse_the_old_episode_approval() {
-    let dir = TestDir::new("incident-guard-episode");
-    let source = Arc::new(Source::new());
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        source.clone(),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let old = active_incident(&handle).await;
-    let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    bind(&recovery, handle.clone());
-    let task = pending(&recovery, &old).await;
-    approve(&recovery, &task);
-    source.set(HEALTHY);
-    wait_for(|| handle.incident(&old.id).unwrap().unwrap().status == IncidentStatus::Resolved)
-        .await;
-    source.set(UNHEALTHY);
-    let new = active_incident(&handle).await;
-    assert_ne!(old.id, new.id);
-    assert!(
-        handle
-            .repair_incident(&new.id, "target-a", new.revision)
-            .is_ok()
-    );
-    assert_blocked(&recovery, &backend, &task).await;
-    recovery.shutdown().await.unwrap();
-    monitor.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn acknowledged_still_active_episode_can_execute_with_a_newer_revision() {
-    let dir = TestDir::new("incident-guard-acknowledged");
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        Arc::new(Source::new()),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let original = active_incident(&handle).await;
-    let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    bind(&recovery, handle.clone());
-    let task = pending(&recovery, &original).await;
-    let latest = handle.incident(&original.id).unwrap().unwrap();
-    let acknowledged = handle
+    let recovery = owned_recovery(&dir, backend.clone());
+    bind(&recovery, monitor.handle());
+    let original = problem(&record);
+    for kind in 0..7 {
+        let mut altered = original.clone();
+        match kind {
+            0 => altered.summary.push_str(" forged"),
+            1 => altered.report.as_mut().unwrap().evidence["exit_code"] = 0.into(),
+            2 => altered.report.as_mut().unwrap().source_id = "another-source".into(),
+            3 => altered.report.as_mut().unwrap().age_ms = 0,
+            4 => altered.evidence_refs = vec!["forged:source".into()],
+            5 => {
+                altered.origin = ProblemOrigin::Incident;
+                altered.report = None;
+            }
+            _ => altered.target_id = "another-target".into(),
+        }
+        assert!(
+            recovery.submit(altered).is_err(),
+            "reject changed field {kind}"
+        );
+    }
+    assert!(recovery.tasks().unwrap().is_empty());
+    // Acknowledgement between the scheduler's read and guarded registration
+    // advances receipt revision without replacing the accepted original report.
+    monitor
+        .handle()
         .acknowledge(
-            &latest.id,
-            latest.revision,
+            &record.id,
+            record.revision,
             "operator",
-            "acknowledged current incident",
+            "received before intake",
         )
         .unwrap();
-    assert!(acknowledged.revision > original.revision);
-    assert_eq!(acknowledged.status, IncidentStatus::Acknowledged);
-    assert!(
-        handle
-            .repair_incident(&original.id, "target-a", original.revision)
-            .is_ok()
-    );
-    approve(&recovery, &task);
-    let completed = recovery
-        .advance(&task.id, Cancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(completed.stage, RecoveryStage::Completed);
-    assert_eq!(backend.executions.load(Ordering::SeqCst), 1);
-    recovery.shutdown().await.unwrap();
-    monitor.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn absent_incident_guard_rejects_episode_registration_before_dispatch() {
-    let dir = TestDir::new("incident-guard-missing");
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        Arc::new(Source::new()),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let incident = active_incident(&monitor.handle()).await;
-    let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    assert!(matches!(
-        recovery.submit(problem(&incident)),
-        Err(RecoveryError::Service(_))
-    ));
-    assert!(recovery.tasks().unwrap().is_empty());
+    let task = recovery.submit(original.clone()).unwrap();
+    assert_eq!(task.problem, original);
     assert_eq!(backend.executions.load(Ordering::SeqCst), 0);
     recovery.shutdown().await.unwrap();
     monitor.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-async fn authority_read_rejects_wrong_target_unknown_id_and_future_revision() {
-    let dir = TestDir::new("incident-guard-identity");
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        Arc::new(Source::new()),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
-    assert!(
-        handle
-            .repair_incident(&incident.id, "other-target", incident.revision)
-            .is_err()
-    );
-    assert!(
-        handle
-            .repair_incident("nonexistent-episode", "target-a", 1)
-            .is_err()
-    );
-    assert!(
-        handle
-            .repair_incident(&incident.id, "target-a", u64::MAX)
-            .is_err()
-    );
-    assert!(handle.repair_incident(&incident.id, "target-a", 0).is_err());
-    monitor.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn guard_binding_is_fixed_and_cannot_be_replaced_after_registration() {
-    let dir = TestDir::new("incident-guard-fixed-binding");
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        Arc::new(Source::new()),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let backend = Arc::new(Backend::default());
-    let recovery = RecoveryService::open(dir.path.join("recovery"), config(), backend).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
-    recovery
-        .bind_incident_guard(Arc::new(guard(handle.clone())))
-        .unwrap();
-    assert!(
-        recovery
-            .bind_incident_guard(Arc::new(guard(handle)))
-            .is_err()
-    );
-    recovery.shutdown().await.unwrap();
-    monitor.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn fault_clearing_during_awaited_target_inspection_is_rechecked_before_execution() {
-    let dir = TestDir::new("incident-guard-inspection-race");
+async fn acknowledged_historical_error_remains_a_receipt_and_can_be_independently_verified() {
+    let dir = TestDir::new("receipt-acknowledged");
     let source = Arc::new(Source::new());
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
@@ -685,76 +427,170 @@ async fn fault_clearing_during_awaited_target_inspection_is_rechecked_before_exe
     )
     .unwrap();
     let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
+    let record = received_error(&handle).await;
     let backend = Arc::new(Backend::default());
-    let recovery =
-        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
-    recovery
-        .bind_target_ownership(Arc::new(
-            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
-        ))
-        .unwrap();
+    let recovery = owned_recovery(&dir, backend.clone());
     bind(&recovery, handle.clone());
-    let task = pending(&recovery, &incident).await;
+    let task = pending(&recovery, &record).await;
+    let acknowledged = handle
+        .acknowledge(
+            &record.id,
+            record.revision,
+            "operator",
+            "receipt acknowledged",
+        )
+        .unwrap();
+    assert_eq!(acknowledged.status, IncidentStatus::Acknowledged);
+    assert!(acknowledged.revision > record.revision);
+    assert!(matches!(
+        guard(handle.clone()).check(&task.problem).unwrap(),
+        IncidentReadiness::Received { .. }
+    ));
+    source.unavailable.store(true, Ordering::SeqCst);
+    wait_for(|| {
+        handle
+            .monitor("monitor-a")
+            .unwrap()
+            .unwrap()
+            .last_error
+            .is_some()
+    })
+    .await;
     approve(&recovery, &task);
-    backend.block_next_inspect.store(true, Ordering::SeqCst);
-    let advancing = tokio::spawn({
-        let recovery = recovery.clone();
-        let id = task.id.clone();
-        async move { recovery.advance(&id, Cancellation::new()).await }
-    });
-    tokio::time::timeout(Duration::from_secs(3), backend.inspect_entered.notified())
+    let completed = recovery
+        .advance(&task.id, Cancellation::new())
         .await
         .unwrap();
-    source.set(HEALTHY);
-    wait_for(|| handle.incident(&incident.id).unwrap().unwrap().status == IncidentStatus::Resolved)
-        .await;
-    backend.inspect_release.notify_one();
-    let _ = tokio::time::timeout(Duration::from_secs(3), advancing)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_blocked(&recovery, &backend, &task).await;
+    assert_eq!(completed.stage, RecoveryStage::Completed);
+    assert_eq!(completed.problem.summary, record.summary);
+    assert_eq!(
+        completed.problem.report.as_ref().unwrap().age_ms,
+        86_400_000
+    );
+    assert_eq!(backend.executions.load(Ordering::SeqCst), 1);
     recovery.shutdown().await.unwrap();
     monitor.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn monotonic_deadline_rejects_stale_evidence_before_the_next_view_tick() {
-    let dir = TestDir::new("incident-guard-monotonic-deadline");
-    let mut definition = monitor_config();
-    definition.monitors[0].interval_ms = 1000;
-    definition.monitors[0].startup_grace_ms = 1000;
-    let mut source = Source::new();
-    source.age_ms = 990;
-    let mut monitor =
-        MonitorEngine::start_with_source(definition, Arc::new(source), dir.path.join("monitor"))
-            .unwrap();
+#[tokio::test]
+async fn stopped_source_instance_cannot_authorize_a_persisted_error_receipt() {
+    let dir = TestDir::new("receipt-stopped");
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        Arc::new(Source::new()),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    let record = received_error(&monitor.handle()).await;
+    let backend = Arc::new(Backend::default());
+    let recovery = owned_recovery(&dir, backend.clone());
+    bind(&recovery, monitor.handle());
+    let task = pending(&recovery, &record).await;
+    approve(&recovery, &task);
+    monitor.shutdown().await.unwrap();
+    assert_blocked(&recovery, &backend, &task).await;
+    recovery.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn receipt_gate_rejects_unknown_id_future_revision_and_rebinding() {
+    let dir = TestDir::new("receipt-gate-identity");
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        Arc::new(Source::new()),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
     let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
+    let record = received_error(&handle).await;
+    assert!(handle.repair_incident("absent", "target-a", 1).is_err());
     assert!(
         handle
-            .repair_incident(&incident.id, "target-a", incident.revision)
-            .is_ok()
-    );
-    tokio::time::advance(Duration::from_millis(20)).await;
-    // No 250ms housekeeping tick has run: the ordinary diagnostic view is cached.
-    assert_eq!(
-        handle.monitor("monitor-a").unwrap().unwrap().freshness,
-        Freshness::Fresh
-    );
-    assert_eq!(
-        handle.incident(&incident.id).unwrap().unwrap().condition,
-        SignalCondition::Active
-    );
-    assert!(
-        handle
-            .repair_incident(&incident.id, "target-a", incident.revision)
+            .repair_incident(&record.id, "another-target", record.revision)
             .is_err()
     );
+    assert!(
+        handle
+            .repair_incident(&record.id, "target-a", record.revision + 1)
+            .is_err()
+    );
+    let recovery = owned_recovery(&dir, Arc::new(Backend::default()));
+    assert!(recovery.submit(problem(&record)).is_err());
+    bind(&recovery, handle.clone());
+    assert!(
+        recovery
+            .bind_incident_guard(Arc::new(guard(handle)))
+            .is_err()
+    );
+    recovery.submit(problem(&record)).unwrap();
+    recovery.shutdown().await.unwrap();
     monitor.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn source_shutdown_during_target_inspection_is_rechecked_before_consuming_approval() {
+    let dir = TestDir::new("receipt-inspection-close");
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        Arc::new(Source::new()),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    let record = received_error(&monitor.handle()).await;
+    let backend = Arc::new(Backend::default());
+    let recovery = owned_recovery(&dir, backend.clone());
+    bind(&recovery, monitor.handle());
+    let task = pending(&recovery, &record).await;
+    approve(&recovery, &task);
+    backend.block_next_inspect.store(true, Ordering::SeqCst);
+    let pending = tokio::spawn({
+        let recovery = recovery.clone();
+        let id = task.id.clone();
+        async move { recovery.advance(&id, Cancellation::new()).await }
+    });
+    backend.inspect_entered.notified().await;
+    monitor.shutdown().await.unwrap();
+    backend.inspect_release.notify_one();
+    assert!(pending.await.unwrap().is_err());
+    assert_eq!(backend.executions.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        recovery.approval(&task.id).unwrap().unwrap().state,
+        ApprovalState::Approved
+    );
+    recovery.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn owned_receipt_lease_blocks_mutation_without_expiring_historical_logs() {
+    let dir = TestDir::new("receipt-owned-gate");
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        Arc::new(Source::new()),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    let handle = monitor.handle();
+    let record = received_error(&handle).await;
+    let authority = guard(handle.clone());
+    let context = problem(&record);
+    let lease = authority.acquire_dispatch(&context).await.unwrap();
+    assert!(
+        handle
+            .acknowledge(&record.id, record.revision, "operator", "blocked")
+            .is_err()
+    );
+    assert!(handle.begin_shutdown().is_err());
+    tokio::time::advance(Duration::from_secs(3600)).await;
+    assert!(matches!(
+        lease.current().unwrap(),
+        IncidentReadiness::Received { .. }
+    ));
+    drop(lease);
+    handle
+        .acknowledge(&record.id, record.revision, "operator", "received")
+        .unwrap();
+    monitor.shutdown().await.unwrap();
+}
 #[tokio::test]
 async fn registration_gate_covers_the_authorization_callback_until_it_returns() {
     let dir = TestDir::new("incident-guard-consume-window");
@@ -765,7 +601,7 @@ async fn registration_gate_covers_the_authorization_callback_until_it_returns() 
     )
     .unwrap();
     let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
+    let incident = received_error(&handle).await;
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
     let callback = std::thread::spawn({
@@ -832,50 +668,6 @@ async fn registration_gate_covers_the_authorization_callback_until_it_returns() 
     monitor.shutdown().await.unwrap();
 }
 
-#[tokio::test(start_paused = true)]
-async fn owned_incident_lease_blocks_mutation_without_blocking_runtime_and_rechecks_freshness() {
-    let dir = TestDir::new("owned-incident-dispatch-gate");
-    let source = Arc::new(Source::new());
-    let mut monitor = MonitorEngine::start_with_source(
-        monitor_config(),
-        source.clone(),
-        dir.path.join("monitor"),
-    )
-    .unwrap();
-    let handle = monitor.handle();
-    let incident = active_incident(&handle).await;
-    let lease = handle
-        .acquire_repair_incident(&incident.id, "target-a", incident.revision)
-        .await
-        .unwrap();
-    assert_eq!(lease.current().unwrap().revision, incident.revision);
-    assert!(
-        handle
-            .acknowledge(&incident.id, incident.revision, "operator", "busy lease")
-            .is_err()
-    );
-    assert!(
-        handle
-            .repair_incident(&incident.id, "target-a", incident.revision)
-            .is_err()
-    );
-    source.set(HEALTHY);
-    // The monitor writer waits asynchronously; the runtime still advances timers.
-    tokio::time::advance(Duration::from_millis(1100)).await;
-    assert_eq!(
-        handle.incident(&incident.id).unwrap().unwrap().revision,
-        incident.revision
-    );
-    assert!(
-        lease.current().is_err(),
-        "holding the mutation gate must not freeze evidence age"
-    );
-    drop(lease);
-    wait_for(|| handle.incident(&incident.id).unwrap().unwrap().status == IncidentStatus::Resolved)
-        .await;
-    monitor.shutdown().await.unwrap();
-}
-
 struct MonitorNetworkGate {
     lease: std::sync::Mutex<Option<Box<dyn IncidentDispatchLease>>>,
     handle: MonitorHandle,
@@ -896,7 +688,7 @@ impl recuvora_host::integrations::extensions::DispatchGuard for MonitorNetworkGa
                 .is_err()
         );
         match self.lease.lock().unwrap().as_ref().unwrap().current() {
-            Ok(IncidentReadiness::Active { .. }) => Ok(()),
+            Ok(IncidentReadiness::Received { .. }) => Ok(()),
             result => Err(ExtensionError::Rejected(format!(
                 "dispatch evidence unavailable: {result:?}"
             ))),
@@ -909,88 +701,76 @@ impl recuvora_host::integrations::extensions::DispatchGuard for MonitorNetworkGa
 }
 
 #[tokio::test]
-async fn production_incident_lease_reaches_network_send_and_stale_evidence_sends_nothing() {
+async fn production_receipt_lease_reaches_network_send_and_releases_before_executor_finishes() {
     use recuvora_host::integrations::extensions::{
         ExtensionCall, ExtensionError, ProtocolSettings,
     };
-    for expire in [false, true] {
-        let dir = TestDir::new("incident-network-dispatch");
-        let source = Arc::new(Source::new());
-        let mut monitor = MonitorEngine::start_with_source(
-            monitor_config(),
-            source.clone(),
-            dir.path.join("monitor"),
+    let dir = TestDir::new("receipt-network-dispatch");
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        Arc::new(Source::new()),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    let handle = monitor.handle();
+    let incident = received_error(&handle).await;
+    let fixture =
+        network_fixture::Fixture::start("http", network_fixture::Behavior::WaitForCancel, None)
+            .await
+            .unwrap();
+    let client = fixture.client(None);
+    let metadata = client.probe().await.unwrap();
+    let authority = guard(handle.clone());
+    let context = problem(&incident);
+    let lease = authority.acquire_dispatch(&context).await.unwrap();
+    let gate = Arc::new(MonitorNetworkGate {
+        lease: std::sync::Mutex::new(Some(lease)),
+        handle: handle.clone(),
+        incident,
+        released: tokio::sync::Notify::new(),
+    });
+    let token = Cancellation::new();
+    let cancel = token.clone();
+    let dispatch = gate.clone();
+    let pending = tokio::spawn(async move {
+        client
+            .call_with_dispatch_guard(
+                ExtensionCall {
+                    contract: "com.example.network".into(),
+                    version: 1,
+                    method: "query".into(),
+                    params: json!({"target":"target-a"}),
+                    timeout: Duration::from_secs(5),
+                },
+                metadata,
+                token,
+                None,
+                None,
+                &ProtocolSettings::default(),
+                Some(dispatch),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), gate.released.notified())
+        .await
+        .unwrap();
+    handle
+        .acknowledge(
+            &gate.incident.id,
+            gate.incident.revision,
+            "operator",
+            "after send",
         )
         .unwrap();
-        let handle = monitor.handle();
-        let incident = active_incident(&handle).await;
-        let fixture =
-            network_fixture::Fixture::start("http", network_fixture::Behavior::WaitForCancel, None)
-                .await
-                .unwrap();
-        let client = fixture.client(None);
-        let metadata = client.probe().await.unwrap();
-        let authority = guard(handle.clone());
-        let context = problem(&incident);
-        let lease = authority.acquire_dispatch(&context).await.unwrap();
-        let gate = Arc::new(MonitorNetworkGate {
-            lease: std::sync::Mutex::new(Some(lease)),
-            handle: handle.clone(),
-            incident,
-            released: tokio::sync::Notify::new(),
-        });
-        source.set(HEALTHY);
-        if expire {
-            tokio::time::sleep(Duration::from_millis(1100)).await;
-        }
-        let token = Cancellation::new();
-        let cancel = token.clone();
-        let dispatch = gate.clone();
-        let pending = tokio::spawn(async move {
-            client
-                .call_with_dispatch_guard(
-                    ExtensionCall {
-                        contract: "com.example.network".into(),
-                        version: 1,
-                        method: "query".into(),
-                        params: json!({"target":"target-a"}),
-                        timeout: Duration::from_secs(5),
-                    },
-                    metadata,
-                    token,
-                    None,
-                    None,
-                    &ProtocolSettings::default(),
-                    Some(dispatch),
-                )
-                .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), gate.released.notified())
-            .await
-            .unwrap();
-        wait_for(|| {
-            handle.incident(&gate.incident.id).unwrap().unwrap().status == IncidentStatus::Resolved
-        })
-        .await;
-        if !expire {
-            fixture.state.wait_for_dispatch().await;
-            assert!(!pending.is_finished());
-            cancel.cancel();
-        }
-        let result = tokio::time::timeout(Duration::from_secs(5), pending)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            fixture.state.calls.load(Ordering::SeqCst),
-            usize::from(!expire)
-        );
-        if expire {
-            assert!(matches!(result, Err(ExtensionError::Rejected(_))));
-        } else {
-            assert!(matches!(result, Err(ExtensionError::Unknown { .. })));
-        }
-        fixture.shutdown().await;
-        monitor.shutdown().await.unwrap();
-    }
+    fixture.state.wait_for_dispatch().await;
+    assert!(!pending.is_finished());
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.state.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(result, Err(ExtensionError::Unknown { .. })));
+    fixture.shutdown().await;
+    monitor.shutdown().await.unwrap();
 }

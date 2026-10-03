@@ -252,11 +252,6 @@ impl DiscoveryState {
             } else {
                 previous % 2 == 1
             };
-            if !expected {
-                // Revoke repair readiness synchronously with inventory membership;
-                // do not wait for the observer's next tick to publish Unknown.
-                lock(&shared.fresh_until)?.remove(&self.definition(key).id);
-            }
             if previous == 0 && complete && !expected {
                 // Zero is unverified after restart; a complete inventory can
                 // explicitly establish absence without passing through present.

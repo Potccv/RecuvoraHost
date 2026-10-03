@@ -21,7 +21,7 @@
 
 ## 授权与恢复
 
-- 监控只产生观察与故障事实，确认收到不解除故障。自动恢复必须由 `recovery_config` 或 `HostRuntime::start_recovery` 显式启用。
+- Node 识别错误并提供结构化错误日志；Host 只校验来源、持久接收、去重和递交 Core，不再计算健康规则、错误级别或业务解除。接收回执与当前故障、人工确认及执行权限分开；恢复必须由 `recovery_config` 或 `HostRuntime::start_recovery` 显式启用。
 - 人工决定经过认证入口进入 Core；执行与审批使用独立会话、上下文和权限。配置、契约登记、模型文本及 UI 状态均不产生执行权限。
 - 保留完整操作绑定、当前 revision、持久批准、一次许可和执行前复核；审批不能扩大目标或动作范围。细则见 [审批](docs/approval.md)。
 - 同一规范目标共用稳定的所有权目录；非终态和 Unknown 不得通过更换状态目录绕过互斥。低层嵌入调用须显式绑定 TargetOwnership、IncidentGuard 并负责关闭，见 [Rust API](docs/api/rust.md)。

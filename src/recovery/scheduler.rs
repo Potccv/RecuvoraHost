@@ -1,47 +1,14 @@
 //! Host-owned incident bindings and serial supervised recovery scheduling.
 use super::MonitorIncidentGuard;
-use crate::control::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
+use super::incident_guard::problem_from_record;
+use crate::control::recovery::incidents::IncidentKind;
 use crate::monitoring::MonitorHandle;
-use crate::recovery::{ProblemContext, RecoveryError, RecoveryService, RecoveryStage};
+use crate::recovery::{RecoveryError, RecoveryService, RecoveryStage};
 use crate::runtime::operation::Cancellation;
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-
-/// Static host policy mapping one observed condition into a repair context.
-/// Neither provider observations nor model output may choose these fields.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IncidentTrigger {
-    pub monitor_id: String,
-    pub rule_id: String,
-    pub fingerprint: String,
-    pub keywords: Vec<String>,
-    pub conditions: BTreeMap<String, String>,
-}
-
-impl IncidentTrigger {
-    pub fn validate(&self) -> Result<(), RecoveryError> {
-        for value in [&self.monitor_id, &self.rule_id, &self.fingerprint] {
-            text(value, 128)?;
-        }
-        if self.keywords.len() > 32 || self.conditions.is_empty() {
-            return Err(RecoveryError::Invalid(
-                "trigger needs exact conditions and at most 32 keywords".into(),
-            ));
-        }
-        let mut words = BTreeSet::new();
-        for keyword in &self.keywords {
-            text(keyword, 128)?;
-            if !words.insert(keyword) {
-                return Err(RecoveryError::Invalid("duplicate trigger keyword".into()));
-            }
-        }
-        validate_facts(&self.conditions)
-    }
-}
 
 /// Owns one bounded serial scheduler. Dropping requests cancellation; explicit
 /// Shutdown waits for the original operation and recovery storage to finish active work.
@@ -58,46 +25,15 @@ impl RecoveryScheduler {
     pub fn start(
         recovery: Arc<RecoveryService>,
         monitor: MonitorHandle,
-        triggers: Vec<IncidentTrigger>,
         interval: Duration,
     ) -> Result<Self, RecoveryError> {
-        if triggers.is_empty()
-            || triggers.len() > 64
-            || interval < Duration::from_millis(10)
-            || interval > Duration::from_secs(3600)
-        {
+        if interval < Duration::from_millis(10) || interval > Duration::from_secs(3600) {
             return Err(RecoveryError::Invalid(
-                "scheduler requires 1..64 triggers and 10ms..1h interval".into(),
+                "scheduler requires 10ms..1h interval".into(),
             ));
         }
-        let mut bindings = BTreeSet::new();
-        for trigger in &triggers {
-            trigger.validate()?;
-            if !bindings.insert((&trigger.monitor_id, &trigger.rule_id)) {
-                return Err(RecoveryError::Invalid("duplicate incident trigger".into()));
-            }
-            let definition = monitor
-                .definition(&trigger.monitor_id)
-                .map_err(service)?
-                .ok_or_else(|| {
-                    RecoveryError::Invalid("trigger monitor is not registered".into())
-                })?;
-            if trigger.rule_id != definition.id {
-                return Err(RecoveryError::Invalid(
-                    "trigger rule must match the registered monitor rule identity".into(),
-                ));
-            }
-            if definition.target_id != recovery.config().target.target_id {
-                return Err(RecoveryError::Invalid(
-                    "trigger monitor belongs to another target".into(),
-                ));
-            }
-        }
         tokio::runtime::Handle::try_current().map_err(service)?;
-        recovery.bind_incident_guard(Arc::new(MonitorIncidentGuard::new(
-            monitor.clone(),
-            triggers.clone(),
-        )?))?;
+        recovery.bind_incident_guard(Arc::new(MonitorIncidentGuard::new(monitor.clone())))?;
         let cancellation = Cancellation::new();
         let running = Arc::new(AtomicBool::new(true));
         let last_error = Arc::new(Mutex::new(None));
@@ -110,7 +46,6 @@ impl RecoveryScheduler {
             run(
                 &worker_recovery,
                 &monitor,
-                &triggers,
                 interval,
                 &worker_cancellation,
                 &worker_error,
@@ -200,44 +135,20 @@ fn service(error: impl std::fmt::Display) -> RecoveryError {
     RecoveryError::Service(error.to_string())
 }
 
-fn text(value: &str, maximum: usize) -> Result<(), RecoveryError> {
-    if value.trim().is_empty() || value.len() > maximum || value.contains('\0') {
-        Err(RecoveryError::Invalid(
-            "empty, oversized or NUL-containing trigger value".into(),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_facts(values: &BTreeMap<String, String>) -> Result<(), RecoveryError> {
-    if values.len() > 32 {
-        return Err(RecoveryError::Capacity);
-    }
-    for (key, value) in values {
-        text(key, 128)?;
-        text(value, 1024)?;
-    }
-    Ok(())
-}
-
 async fn run(
     recovery: &Arc<RecoveryService>,
     monitor: &MonitorHandle,
-    triggers: &[IncidentTrigger],
     interval: Duration,
     cancellation: &Cancellation,
     last_error: &Mutex<Option<String>>,
 ) {
+    let notifications = monitor.error_notifications();
     loop {
+        let notified = notifications.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if cancellation.is_cancelled() {
             break;
-        }
-        if let Err(error) = recovery.summarize_pending(cancellation.clone()).await {
-            remember(last_error, error);
-        }
-        if let Err(error) = recovery.deliver_pending() {
-            remember(last_error, error);
         }
         let tasks = match recovery.tasks() {
             Ok(tasks) => tasks,
@@ -250,45 +161,34 @@ async fn run(
             .iter()
             .map(|task| task.problem.incident_id.clone())
             .collect();
+        let mut waiting_for_target = false;
         match monitor.incidents() {
             Ok(incidents) => {
                 for incident in incidents {
                     if cancellation.is_cancelled() {
                         break;
                     }
-                    if incident.kind != IncidentKind::Target
-                        || incident.condition != SignalCondition::Active
-                        || incident.status == IncidentStatus::Resolved
+                    if incident.kind != IncidentKind::ErrorLog
                         || seen.contains(&incident.id)
                         || incident.target_id != recovery.config().target.target_id
                     {
                         continue;
                     }
-                    let Some(trigger) = triggers.iter().find(|trigger| {
-                        trigger.monitor_id == incident.monitor_id
-                            && trigger.rule_id == incident.rule_id
-                    }) else {
-                        continue;
-                    };
-                    let problem = ProblemContext {
-                        incident_id: incident.id.clone(),
-                        incident_revision: incident.revision,
-                        target_id: incident.target_id,
-                        fingerprint: trigger.fingerprint.clone(),
-                        summary: incident.summary,
-                        occurrences: incident.occurrences,
-                        keywords: trigger.keywords.clone(),
-                        conditions: trigger.conditions.clone(),
-                        evidence_refs: vec![format!(
-                            "incident:{}:revision:{}",
-                            incident.id, incident.revision
-                        )],
+                    let problem = match problem_from_record(
+                        &incident,
+                        recovery.config().target.required_facts.clone(),
+                    ) {
+                        Ok(problem) => problem,
+                        Err(error) => {
+                            remember(last_error, error);
+                            continue;
+                        }
                     };
                     match recovery.submit(problem) {
                         Ok(_) => {
                             seen.insert(incident.id);
                         }
-                        Err(RecoveryError::Busy) => {}
+                        Err(RecoveryError::Busy) => waiting_for_target = true,
                         Err(error) => remember(last_error, error),
                     }
                 }
@@ -316,15 +216,26 @@ async fn run(
                             advance.await
                         }
                     };
-                    if let Err(error) = result {
-                        remember(last_error, error);
+                    match result {
+                        Ok(task) if task.stage.terminal() && waiting_for_target => {
+                            notifications.notify_one();
+                        }
+                        Err(error) => remember(last_error, error),
+                        _ => {}
                     }
                 }
             }
             Err(error) => remember(last_error, error),
         }
+        if let Err(error) = recovery.summarize_pending(cancellation.clone()).await {
+            remember(last_error, error);
+        }
+        if let Err(error) = recovery.deliver_pending() {
+            remember(last_error, error);
+        }
         tokio::select! {
             _ = cancellation.cancelled() => break,
+            _ = notified => {},
             _ = tokio::time::sleep(interval) => {}
         }
     }

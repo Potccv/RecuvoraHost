@@ -18,7 +18,7 @@
 | ExtensionRegistry 到 ObservationSource 的适配 | `src/integrations/monitoring/mod.rs` |
 | ExtensionRegistry/HarnessRegistry 到 RepairBackend 的适配与 Host 脚本解释 | `src/integrations/recovery/node_backend.rs`、`executor.rs`、`harness_repair.rs` |
 | Host 恢复服务配置、按配置启动及等待在途任务结束 | `src/configuration/recovery.rs`、`src/boot/host.rs` |
-| 监控故障绑定、IncidentGuard 与恢复流程调度 | `src/recovery/incident_guard.rs`、`scheduler.rs` |
+| 错误收据绑定、IncidentGuard 与 Core 交付调度 | `src/recovery/incident_guard.rs`、`scheduler.rs` |
 | Core 聚合存储、能力注入与派发保护 | `src/recovery/aggregate.rs`、`platform.rs`、`dispatch.rs` |
 | Host 任务、审批、修复经验与根据节点证据核实结果的 HTTP 管理 | `src/server/recovery.rs` |
 | 插件 UI catalog、view 与页面刷新 HTTP 接口 | `src/server/http.rs`、`src/server/monitoring.rs`、`src/server/plugin_pages.rs` |

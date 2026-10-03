@@ -1,22 +1,33 @@
-//! Trusted read-only fault validity checks before a workflow consumes authority.
+//! Trusted origin-specific evidence checks before a workflow consumes authority.
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IncidentReadiness {
-    Active { revision: u64 },
-    Resolved { revision: u64 },
-    Unavailable { reason: String },
+    Active {
+        revision: u64,
+    },
+    /// Immutable source error receipt is bound and available; no health claim.
+    Received {
+        revision: u64,
+    },
+    Resolved {
+        revision: u64,
+    },
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// Holds the source mutation gate until the executor dispatch boundary.
-/// `current` rechecks freshness and irreversible runtime failure while held.
+/// `current` rechecks the applicable origin binding and running instance while held.
 pub trait IncidentDispatchLease: Send + Sync {
     fn current(&self) -> Result<IncidentReadiness, RecoveryError>;
 }
 
 /// Trusted host integration, never a model tool or an assertion from log text.
-/// Check the same incident episode against current authoritative facts and
-/// freshness. Acknowledgements may advance its revision without ending a fault.
+/// Check the matching origin: current incident facts, or an immutable error
+/// receipt bound to the accepted problem. Receipt is not a target health claim.
+/// Acknowledgements may advance revision without changing the received evidence.
 /// Synchronous registration checks hold the source gate through `commit`.
 /// Execution additionally requires an owned `acquire_dispatch` lease, held from
 /// authorization through the network send and rechecked after the handshake.
@@ -58,11 +69,26 @@ pub(super) fn incident(
     current: IncidentReadiness,
 ) -> Result<recuvora_core::recovery::workflow::IncidentEvidence, RecoveryError> {
     match current {
-        IncidentReadiness::Active { revision } if revision >= problem.incident_revision => {
+        IncidentReadiness::Active { revision }
+            if problem.origin == ProblemOrigin::Incident
+                && revision >= problem.incident_revision =>
+        {
             Ok(recuvora_core::recovery::workflow::IncidentEvidence {
                 incident_id: problem.incident_id.clone(),
                 revision,
                 active: true,
+                received: false,
+            })
+        }
+        IncidentReadiness::Received { revision }
+            if problem.origin == ProblemOrigin::ErrorLog
+                && revision >= problem.incident_revision =>
+        {
+            Ok(recuvora_core::recovery::workflow::IncidentEvidence {
+                incident_id: problem.incident_id.clone(),
+                revision,
+                active: false,
+                received: true,
             })
         }
         IncidentReadiness::Resolved { .. } => Err(RecoveryError::Invalid(

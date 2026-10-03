@@ -8,6 +8,8 @@ use thiserror::Error;
 pub enum IncidentKind {
     Target,
     Coverage,
+    /// Immutable Node error receipt. Active means received, not verified unhealthy.
+    ErrorLog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

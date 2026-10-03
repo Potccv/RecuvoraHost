@@ -1,40 +1,101 @@
-//! Host gate binding authoritative monitor facts to recovery dispatch.
-use super::IncidentTrigger;
-use crate::control::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
-use crate::monitoring::{MonitorHandle, MonitorIncidentLease};
+//! Bind protected immutable error receipts to Core intake and actual dispatch.
+use crate::control::recovery::incidents::{IncidentKind, IncidentRecord};
+use crate::monitoring::{MonitorHandle, MonitorIncidentLease, NodeErrorLog};
 use crate::recovery::{
-    IncidentDispatchLease, IncidentGuard, IncidentReadiness, ProblemContext, RecoveryError,
-    RecoveryFuture,
+    IncidentDispatchLease, IncidentGuard, IncidentReadiness, ProblemContext, ProblemOrigin,
+    RecoveryError, RecoveryFuture,
 };
-use std::collections::BTreeSet;
+use recuvora_core::recovery::workflow::ErrorLogEvidence;
+use serde::Deserialize;
+use std::collections::BTreeMap;
 
-/// Supplies control workflow evidence under Host's atomic, fresh monitor gate.
+/// Supplies receipt evidence, not a judgment about current target health.
 pub struct MonitorIncidentGuard {
     monitor: MonitorHandle,
-    triggers: Vec<IncidentTrigger>,
+}
+impl MonitorIncidentGuard {
+    pub fn new(monitor: MonitorHandle) -> Self {
+        Self { monitor }
+    }
 }
 
-impl MonitorIncidentGuard {
-    pub fn new(
-        monitor: MonitorHandle,
-        triggers: Vec<IncidentTrigger>,
-    ) -> Result<Self, RecoveryError> {
-        if triggers.is_empty() || triggers.len() > 64 {
-            return Err(RecoveryError::Invalid(
-                "incident guard requires 1..64 triggers".into(),
-            ));
-        }
-        let mut bindings = BTreeSet::new();
-        for trigger in &triggers {
-            trigger.validate()?;
-            if !bindings.insert((&trigger.monitor_id, &trigger.rule_id)) {
-                return Err(RecoveryError::Invalid(
-                    "duplicate incident guard binding".into(),
-                ));
-            }
-        }
-        Ok(Self { monitor, triggers })
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReceivedError {
+    kind: String,
+    extension_id: String,
+    source_id: String,
+    generation: String,
+    log: NodeErrorLog,
+}
+
+/// Preserve the original log and source evidence in Core. Conditions come only
+/// from trusted target configuration; no host rule interprets the log message.
+pub(super) fn problem_from_record(
+    record: &IncidentRecord,
+    conditions: BTreeMap<String, String>,
+) -> Result<ProblemContext, RecoveryError> {
+    if record.kind != IncidentKind::ErrorLog {
+        return Err(RecoveryError::Invalid("error log receipt required".into()));
     }
+    let received: ReceivedError = serde_json::from_value(record.evidence.clone())?;
+    if received.kind != "node_error" || received.log.message != record.summary {
+        return Err(RecoveryError::Invalid(
+            "error log receipt content mismatch".into(),
+        ));
+    }
+    let problem = ProblemContext {
+        origin: ProblemOrigin::ErrorLog,
+        report: Some(ErrorLogEvidence {
+            source_id: received.source_id,
+            generation: received.generation,
+            record_id: received.log.id,
+            sequence: received.log.sequence,
+            age_ms: received.log.age_ms,
+            evidence: received.log.evidence,
+        }),
+        incident_id: record.id.clone(),
+        incident_revision: record.revision,
+        target_id: record.target_id.clone(),
+        fingerprint: received.log.fingerprint,
+        summary: received.log.message,
+        occurrences: record.occurrences,
+        keywords: Vec::new(),
+        conditions,
+        evidence_refs: vec![
+            format!("node-error:{}", received.extension_id),
+            format!("error-receipt:{}", record.id),
+        ],
+    };
+    problem.validate().map_err(service)?;
+    Ok(problem)
+}
+
+fn receipt_readiness(
+    record: &IncidentRecord,
+    problem: &ProblemContext,
+) -> Result<IncidentReadiness, RecoveryError> {
+    if record.id != problem.incident_id
+        || record.target_id != problem.target_id
+        || record.revision < problem.incident_revision
+        || problem.origin != ProblemOrigin::ErrorLog
+    {
+        return Err(RecoveryError::Invalid(
+            "error receipt identity or revision mismatch".into(),
+        ));
+    }
+    let mut expected = problem_from_record(record, problem.conditions.clone())?;
+    // An acknowledgement may advance receipt revision without changing its raw
+    // content, original source identity or the accepted Core problem binding.
+    expected.incident_revision = problem.incident_revision;
+    if expected != *problem {
+        return Err(RecoveryError::Invalid(
+            "error report differs from its durable receipt".into(),
+        ));
+    }
+    Ok(IncidentReadiness::Received {
+        revision: record.revision,
+    })
 }
 
 impl IncidentGuard for MonitorIncidentGuard {
@@ -55,7 +116,6 @@ impl IncidentGuard for MonitorIncidentGuard {
             let lease = GuardLease {
                 lease,
                 problem: problem.clone(),
-                triggers: self.triggers.clone(),
             };
             lease.current()?;
             Ok(Box::new(lease) as Box<dyn IncidentDispatchLease>)
@@ -71,41 +131,7 @@ impl IncidentGuard for MonitorIncidentGuard {
                 &problem.incident_id,
                 &problem.target_id,
                 problem.incident_revision,
-                |record| {
-                    if record.id != problem.incident_id
-                        || record.target_id != problem.target_id
-                        || record.kind != IncidentKind::Target
-                        || record.revision < problem.incident_revision
-                        || !self.triggers.iter().any(|trigger| {
-                            trigger.monitor_id == record.monitor_id
-                                && trigger.rule_id == record.rule_id
-                                && trigger.fingerprint == problem.fingerprint
-                                && trigger.conditions == problem.conditions
-                                && trigger.keywords == problem.keywords
-                        })
-                    {
-                        return Err(RecoveryError::Invalid(
-                            "incident no longer matches its trusted trigger".into(),
-                        ));
-                    }
-                    if record.status == IncidentStatus::Resolved
-                        && record.condition == SignalCondition::Clear
-                    {
-                        commit(IncidentReadiness::Resolved {
-                            revision: record.revision,
-                        })
-                    } else if record.condition == SignalCondition::Active
-                        && record.status != IncidentStatus::Resolved
-                    {
-                        commit(IncidentReadiness::Active {
-                            revision: record.revision,
-                        })
-                    } else {
-                        commit(IncidentReadiness::Unavailable {
-                            reason: "incident has no current active evidence".into(),
-                        })
-                    }
-                },
+                |record| commit(receipt_readiness(&record, problem)?),
             )
             .map_err(service)?
     }
@@ -114,40 +140,12 @@ impl IncidentGuard for MonitorIncidentGuard {
 struct GuardLease {
     lease: MonitorIncidentLease,
     problem: ProblemContext,
-    triggers: Vec<IncidentTrigger>,
 }
 impl IncidentDispatchLease for GuardLease {
     fn current(&self) -> Result<IncidentReadiness, RecoveryError> {
-        let record = self.lease.current().map_err(service)?;
-        if !self.triggers.iter().any(|trigger| {
-            trigger.monitor_id == record.monitor_id
-                && trigger.rule_id == record.rule_id
-                && trigger.fingerprint == self.problem.fingerprint
-                && trigger.conditions == self.problem.conditions
-                && trigger.keywords == self.problem.keywords
-        }) {
-            return Err(RecoveryError::Invalid(
-                "incident no longer matches its trusted trigger".into(),
-            ));
-        }
-        if record.status == IncidentStatus::Resolved && record.condition == SignalCondition::Clear {
-            Ok(IncidentReadiness::Resolved {
-                revision: record.revision,
-            })
-        } else if record.condition == SignalCondition::Active
-            && record.status != IncidentStatus::Resolved
-        {
-            Ok(IncidentReadiness::Active {
-                revision: record.revision,
-            })
-        } else {
-            Ok(IncidentReadiness::Unavailable {
-                reason: "incident has no current active evidence".into(),
-            })
-        }
+        receipt_readiness(&self.lease.current().map_err(service)?, &self.problem)
     }
 }
-
 fn service(error: impl std::fmt::Display) -> RecoveryError {
     RecoveryError::Service(error.to_string())
 }

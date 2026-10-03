@@ -15,7 +15,8 @@ pub use contract::*;
 pub use incident_gate::{IncidentDispatchLease, IncidentGuard, IncidentReadiness};
 pub use incident_guard::MonitorIncidentGuard;
 pub use ownership::{CanonicalTarget, FileTargetOwnership, TargetLease, TargetOwnership};
-pub use scheduler::{IncidentTrigger, RecoveryScheduler};
+pub use recuvora_core::recovery::planning::{ErrorLogEvidence, ProblemOrigin};
+pub use scheduler::RecoveryScheduler;
 pub use service::RecoveryService;
 
 pub use recuvora_core::recovery::workflow::{

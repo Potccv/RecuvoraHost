@@ -62,7 +62,6 @@ fn config(name: &str) -> ServerConfig {
         repair_config: None,
         monitors_config: None,
         recovery_config: None,
-        log_sources: vec![],
         ui_dir: None,
     }
 }

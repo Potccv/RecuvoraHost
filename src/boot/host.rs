@@ -132,7 +132,6 @@ impl HostRuntime {
         let scheduler = match RecoveryScheduler::start(
             recovery.clone(),
             (*monitor).clone(),
-            config.triggers,
             Duration::from_millis(config.interval_ms),
         ) {
             Ok(scheduler) => scheduler,

@@ -1,26 +1,19 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "monitors": [
     {
       "id": "monitor-001",
       "target_id": "target-001",
       "source_id": "source-001",
-      "extension_id": "observation-extension",
-      "contract": "com.example.observation",
-      "version": 1,
-      "method": "observe",
+      "extension_id": "error-node",
+      "contract": "com.example.error_logs",
+      "version": 2,
+      "method": "read_errors",
       "params": {},
       "interval_ms": 30000,
       "timeout_ms": 5000,
       "stale_after_ms": 90000,
-      "startup_grace_ms": 60000,
-      "rule": {
-        "pointer": "/ready",
-        "operator": "eq",
-        "value": true,
-        "failure_samples": 3,
-        "success_samples": 3
-      }
+      "startup_grace_ms": 60000
     }
   ]
 }

@@ -43,7 +43,19 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         assert_eq!(self.path.parent(), Some(self.root.as_path()));
-        std::fs::remove_dir_all(&self.path).expect("remove only this recorded test directory");
+        if let Err(error) = std::fs::remove_dir_all(&self.path) {
+            if std::thread::panicking() {
+                eprintln!(
+                    "retained monitor test directory {} after failure: {error}",
+                    self.path.display()
+                );
+            } else {
+                panic!(
+                    "remove only recorded test directory {}: {error}",
+                    self.path.display()
+                );
+            }
+        }
     }
 }
 
@@ -79,7 +91,7 @@ fn source() -> (Arc<ControlledSource>, mpsc::UnboundedReceiver<Pending>) {
 }
 fn config() -> MonitorsConfig {
     MonitorsConfig {
-        schema_version: 1,
+        schema_version: 2,
         discoveries: vec![],
         monitors: vec![MonitorDefinition {
             id: "service-ready".into(),
@@ -88,26 +100,19 @@ fn config() -> MonitorsConfig {
             view_role: Some("readiness".into()),
             extension_id: "probe-plugin".into(),
             contract: "example.monitor".into(),
-            version: 1,
+            version: 2,
             method: "observe".into(),
             params: json!({}),
             interval_ms: 1000,
             timeout_ms: 25_000,
             stale_after_ms: 10_000,
             startup_grace_ms: 1500,
-            rule: MonitorRule {
-                pointer: "/ready".into(),
-                operator: RuleOperator::Eq,
-                value: json!(true),
-                failure_samples: 2,
-                success_samples: 2,
-            },
         }],
     }
 }
 fn batch(request: &ObservationRequest, sequence: u64, value: Value) -> ObservationBatch {
     ObservationBatch {
-        schema_version: 1,
+        schema_version: 2,
         target_id: "service".into(),
         source_id: "ready-probe".into(),
         generation: "g1".into(),
@@ -115,13 +120,14 @@ fn batch(request: &ObservationRequest, sequence: u64, value: Value) -> Observati
         next_cursor: format!("cursor-{sequence}"),
         coverage: BatchCoverage::Complete,
         has_more: false,
-        error: None,
-        samples: vec![ObservationSample {
+        source_error: None,
+        errors: vec![ObservationSample {
             id: format!("sample-{sequence}"),
             sequence,
             age_ms: 0,
-            value,
-            evidence: json!({"origin":"controlled-test"}),
+            fingerprint: "provider-error".into(),
+            message: "provider reported failure".into(),
+            evidence: value,
         }],
     }
 }
@@ -131,7 +137,10 @@ async fn settle() {
     }
 }
 async fn respond(pending: Pending, sequence: u64, healthy: bool) {
-    let response = batch(&pending.request, sequence, json!({"ready":healthy}));
+    let mut response = batch(&pending.request, sequence, json!({"detail":"node failure"}));
+    if healthy {
+        response.errors.clear();
+    }
     pending.reply.send(Ok(response)).unwrap();
     settle().await;
 }
@@ -221,17 +230,15 @@ fn inventory_source() -> (
     )
 }
 fn discovery_config() -> MonitorsConfig {
-    let mut template = config().monitors.remove(0);
-    template.rule.failure_samples = 1;
-    template.rule.success_samples = 1;
+    let template = config().monitors.remove(0);
     MonitorsConfig {
-        schema_version: 1,
+        schema_version: 2,
         monitors: vec![],
         discoveries: vec![MonitorDiscovery {
             id: "inventory-main".into(),
             extension_id: "probe-plugin".into(),
             contract: "example.monitor".into(),
-            version: 1,
+            version: 2,
             method: "inventory".into(),
             params: json!({}),
             interval_ms: 1000,
@@ -266,7 +273,10 @@ async fn inventory_next(
     pending.recv().await.expect("next discovery")
 }
 async fn dynamic_response(pending: Pending, sequence: u64, healthy: bool) {
-    let mut response = batch(&pending.request, sequence, json!({"ready":healthy}));
+    let mut response = batch(&pending.request, sequence, json!({"detail":"node failure"}));
+    if healthy {
+        response.errors.clear();
+    }
     response.target_id = pending.request.params["target_id"].as_str().unwrap().into();
     response.source_id = pending.request.params["source_id"].as_str().unwrap().into();
     pending.reply.send(Ok(response)).unwrap();
@@ -308,32 +318,32 @@ async fn discovery_enrols_after_empty_start_and_isolates_simultaneous_targets() 
             .monitor("service-ready.alpha")
             .unwrap()
             .unwrap()
-            .health,
-        TargetHealth::Unhealthy
+            .received_error_count,
+        1
     );
     assert_eq!(
         handle
             .monitor("service-ready.beta")
             .unwrap()
             .unwrap()
-            .health,
-        TargetHealth::Healthy
+            .received_error_count,
+        0
     );
     let monitor = handle.monitor("service-ready.beta").unwrap().unwrap();
     let monitor_json = serde_json::to_value(&monitor).unwrap();
     assert_eq!(monitor_json["view_role"], "readiness");
     assert_eq!(monitor_json["contract"], "example.monitor");
-    assert_eq!(monitor_json["version"], 1);
+    assert_eq!(monitor_json["version"], 2);
     assert_eq!(monitor_json["method"], "observe");
     let discovery_json = serde_json::to_value(&handle.snapshot().unwrap().discoveries[0]).unwrap();
     assert_eq!(discovery_json["contract"], "example.monitor");
-    assert_eq!(discovery_json["version"], 1);
+    assert_eq!(discovery_json["version"], 2);
     assert_eq!(discovery_json["method"], "inventory");
     let incident = handle
         .incidents()
         .unwrap()
         .into_iter()
-        .find(|i| i.kind == IncidentKind::Target)
+        .find(|i| i.kind == IncidentKind::ErrorLog)
         .unwrap();
     assert_eq!(incident.monitor_id, "service-ready.alpha");
     engine.shutdown().await.unwrap();
@@ -381,7 +391,7 @@ async fn discovery_removal_and_restart_retain_identity_cursor_and_acknowledged_f
         .incidents()
         .unwrap()
         .into_iter()
-        .find(|i| i.kind == IncidentKind::Target)
+        .find(|i| i.kind == IncidentKind::ErrorLog)
         .unwrap();
     handle
         .acknowledge(&incident.id, incident.revision, "operator", "received")
@@ -396,7 +406,7 @@ async fn discovery_removal_and_restart_retain_identity_cursor_and_acknowledged_f
     settle().await;
     assert_eq!(handle.snapshot().unwrap().discoveries[0].present_targets, 0);
     let missing = handle.monitor("service-ready.alpha").unwrap().unwrap();
-    assert_eq!(missing.health, TargetHealth::Unknown);
+    assert_eq!(missing.coverage, Coverage::Unavailable);
     assert_eq!(missing.cursor, cursor);
     assert_ne!(
         handle.incident(&incident.id).unwrap().unwrap().status,
@@ -413,8 +423,8 @@ async fn discovery_removal_and_restart_retain_identity_cursor_and_acknowledged_f
             .monitor("service-ready.alpha")
             .unwrap()
             .unwrap()
-            .health,
-        TargetHealth::Unknown
+            .freshness,
+        Freshness::Missing
     );
     assert_eq!(
         handle
@@ -524,14 +534,14 @@ async fn discovery_delete_and_return_rejects_inflight_reply_from_old_membership(
     inventory_reply(inventory_next(&mut inventories).await, &["alpha"], true).await;
     dynamic_response(held, 1, true).await;
     let view = handle.monitor("service-ready.alpha").unwrap().unwrap();
-    assert_eq!(view.health, TargetHealth::Unknown);
-    assert_eq!(view.consecutive_successes, 0);
+    assert_eq!(view.received_error_count, 0);
+    assert_eq!(view.coverage, Coverage::Unavailable);
     assert!(view.cursor.is_none());
     engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
-async fn discovery_delete_and_return_between_polls_invalidates_old_health_and_counts() {
+async fn discovery_delete_and_return_between_polls_invalidates_coverage() {
     let dir = TestDir::new();
     let (source, mut polls, mut inventories) = inventory_source();
     let mut cfg = discovery_config();
@@ -546,8 +556,8 @@ async fn discovery_delete_and_return_between_polls_invalidates_old_health_and_co
             .monitor("service-ready.alpha")
             .unwrap()
             .unwrap()
-            .health,
-        TargetHealth::Healthy
+            .received_error_count,
+        0
     );
     tokio::time::advance(Duration::from_millis(10)).await;
     inventory_reply(inventories.recv().await.unwrap(), &[], true).await;
@@ -556,8 +566,8 @@ async fn discovery_delete_and_return_between_polls_invalidates_old_health_and_co
     tokio::time::advance(Duration::from_millis(250)).await;
     settle().await;
     let view = handle.monitor("service-ready.alpha").unwrap().unwrap();
-    assert_eq!(view.health, TargetHealth::Unknown);
-    assert_eq!(view.consecutive_successes, 0);
+    assert_eq!(view.received_error_count, 0);
+    assert_eq!(view.coverage, Coverage::Unavailable);
     assert_eq!(view.cursor.as_deref(), Some("cursor-1"));
     assert!(polls.try_recv().is_err());
     engine.shutdown().await.unwrap();
@@ -603,408 +613,376 @@ async fn discovery_restart_waits_startup_grace_without_false_incident_on_first_v
     missing.shutdown().await.unwrap();
 }
 
+fn receipts(
+    handle: &MonitorHandle,
+) -> Vec<recuvora_host::control::recovery::incidents::IncidentRecord> {
+    handle
+        .incidents()
+        .unwrap()
+        .into_iter()
+        .filter(|record| record.kind == IncidentKind::ErrorLog)
+        .collect()
+}
+
 #[tokio::test(start_paused = true)]
-async fn stable_samples_ack_and_evidence_resolution_with_duplicate_suppression() {
+async fn every_new_node_error_is_received_immediately_and_notifies_after_durable_commit() {
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    let handle = engine.handle();
+    let notifications = handle.error_notifications();
+    let request = pending.recv().await.unwrap();
+    let mut response = batch(&request.request, 1, json!({"original":"evidence"}));
+    response.errors[0].message = "node error\nwith original context".into();
+    response.errors[0].age_ms = 500_000;
+    request.reply.send(Ok(response)).unwrap();
+    notifications.notified().await;
+    let first = receipts(&handle).remove(0);
+    assert_eq!(first.summary, "node error\nwith original context");
+    assert_eq!(
+        first.evidence["log"]["evidence"],
+        json!({"original":"evidence"})
+    );
+    assert_eq!(first.evidence["log"]["age_ms"], 500_000);
+    assert_eq!(first.evidence["kind"], "node_error");
+    assert_eq!(first.occurrences, 1);
+    assert_eq!(view(&handle).freshness, Freshness::Fresh);
+    respond(next(&mut pending).await, 2, false).await;
+    assert_eq!(receipts(&handle).len(), 2);
+    assert_eq!(view(&handle).received_error_count, 2);
+    assert_eq!(view(&handle).last_error_log.unwrap().id, "sample-2");
+    assert_eq!(handle.incident(&first.id).unwrap().unwrap(), first);
+    assert!(
+        receipts(&handle)
+            .iter()
+            .all(|record| record.status == IncidentStatus::Open)
+    );
+    engine.shutdown().await.unwrap();
+    let (source, _) = self::source();
+    let mut reopened = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    assert_eq!(receipts(&reopened.handle()).len(), 2);
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn empty_partial_failed_and_stale_sources_never_clear_received_errors() {
     let dir = TestDir::new();
     let (source, mut pending) = source();
     let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
     let handle = engine.handle();
     respond(pending.recv().await.unwrap(), 1, false).await;
-    assert_eq!(view(&handle).consecutive_failures, 1);
-    assert!(handle.incidents().unwrap().is_empty());
-    let before = std::fs::metadata(dir.path.join("incidents.jsonl"))
-        .unwrap()
-        .len();
-    respond(next(&mut pending).await, 1, false).await;
-    assert_eq!(view(&handle).consecutive_failures, 1);
-    assert_eq!(
-        std::fs::metadata(dir.path.join("incidents.jsonl"))
-            .unwrap()
-            .len(),
-        before
-    );
-    respond(next(&mut pending).await, 2, false).await;
-    assert_eq!(view(&handle).health, TargetHealth::Unhealthy);
-    let incident = handle
-        .incidents()
-        .unwrap()
-        .into_iter()
-        .find(|i| i.kind == IncidentKind::Target)
-        .unwrap();
+    let record = receipts(&handle).remove(0);
     let acknowledged = handle
-        .acknowledge(&incident.id, incident.revision, "operator", "investigating")
+        .acknowledge(&record.id, record.revision, "operator", "received")
         .unwrap();
-    assert_eq!(acknowledged.status, IncidentStatus::Acknowledged);
-    assert_eq!(view(&handle).health, TargetHealth::Unhealthy);
-    respond(next(&mut pending).await, 3, true).await;
-    assert_eq!(view(&handle).health, TargetHealth::Unhealthy);
-    respond(next(&mut pending).await, 4, true).await;
-    assert_eq!(view(&handle).health, TargetHealth::Healthy);
-    assert_eq!(
-        handle.incident(&incident.id).unwrap().unwrap().status,
-        IncidentStatus::Resolved
-    );
-    engine.shutdown().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn missing_empty_partial_and_wrong_types_do_not_create_health() {
-    let dir = TestDir::new();
-    let (source, mut pending) = source();
-    let mut cfg = config();
-    cfg.monitors[0].rule.success_samples = 1;
-    let mut engine = MonitorEngine::start_with_source(cfg, source, &dir.path).unwrap();
-    let handle = engine.handle();
-    let first = pending.recv().await.unwrap();
-    tokio::time::advance(Duration::from_millis(1600)).await;
-    settle().await;
-    assert_eq!(view(&handle).freshness, Freshness::Missing);
-    let coverage = handle
-        .incidents()
-        .unwrap()
-        .into_iter()
-        .find(|i| i.kind == IncidentKind::Coverage)
-        .unwrap();
-    let mut empty = batch(&first.request, 0, json!({}));
-    empty.samples.clear();
-    first.reply.send(Ok(empty)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).coverage, Coverage::Complete);
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    assert_ne!(
-        handle.incident(&coverage.id).unwrap().unwrap().status,
-        IncidentStatus::Resolved
-    );
+    respond(next(&mut pending).await, 2, true).await;
+    assert_eq!(view(&handle).freshness, Freshness::Fresh);
     let request = next(&mut pending).await;
-    let mut partial = batch(&request.request, 1, json!({"ready":true}));
-    partial.has_more = true;
-    request.reply.send(Ok(partial)).unwrap();
+    let mut response = batch(&request.request, 3, json!({}));
+    response.errors.clear();
+    response.coverage = BatchCoverage::Partial;
+    request.reply.send(Ok(response)).unwrap();
     settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
     assert_eq!(view(&handle).coverage, Coverage::Partial);
     let request = next(&mut pending).await;
-    let invalid = batch(&request.request, 2, json!({"ready":"true"}));
-    request.reply.send(Ok(invalid)).unwrap();
+    request
+        .reply
+        .send(Err(MonitorError::Observation("source unavailable".into())))
+        .unwrap();
     settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    assert!(view(&handle).last_error.unwrap().contains("invalid type"));
-    respond(next(&mut pending).await, 3, true).await;
-    assert_eq!(view(&handle).health, TargetHealth::Healthy);
-    assert_eq!(
-        handle.incident(&coverage.id).unwrap().unwrap().status,
-        IncidentStatus::Resolved
-    );
-    engine.shutdown().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn expiration_runs_during_inflight_poll_and_late_history_does_not_refresh() {
-    let dir = TestDir::new();
-    let (source, mut pending) = source();
-    let mut cfg = config();
-    cfg.monitors[0].rule.success_samples = 1;
-    cfg.monitors[0].stale_after_ms = 3000;
-    let mut engine = MonitorEngine::start_with_source(cfg, source, &dir.path).unwrap();
-    let handle = engine.handle();
-    respond(pending.recv().await.unwrap(), 1, true).await;
-    assert_eq!(view(&handle).health, TargetHealth::Healthy);
-    let request = next(&mut pending).await;
-    tokio::time::advance(Duration::from_millis(2100)).await;
+    let held = next(&mut pending).await;
+    tokio::time::advance(Duration::from_millis(10_000)).await;
     settle().await;
     assert_eq!(view(&handle).freshness, Freshness::Stale);
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    let mut history = batch(&request.request, 2, json!({"ready":true}));
-    history.samples[0].age_ms = 10_000;
-    request.reply.send(Ok(history)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).freshness, Freshness::Stale);
-    assert_eq!(view(&handle).last_sample_id.as_deref(), Some("sample-1"));
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    let _inflight = next(&mut pending).await;
-    engine.shutdown().await.unwrap();
-    assert!(!handle.snapshot().unwrap().running);
-}
-
-#[tokio::test(start_paused = true)]
-async fn restart_keeps_cursor_but_requires_new_samples_and_source_reset_reports_gap() {
-    let dir = TestDir::new();
-    let mut cfg = config();
-    cfg.monitors[0].rule.success_samples = 1;
-    cfg.monitors[0].rule.failure_samples = 1;
-    let (first_source, mut first_pending) = source();
-    let mut first = MonitorEngine::start_with_source(cfg.clone(), first_source, &dir.path).unwrap();
-    let old_handle = first.handle();
-    respond(first_pending.recv().await.unwrap(), 1, false).await;
-    let incident = old_handle
-        .incidents()
-        .unwrap()
-        .into_iter()
-        .find(|i| i.kind == IncidentKind::Target)
-        .unwrap();
-    first.shutdown().await.unwrap();
-    let (second_source, mut pending) = source();
-    let mut second = MonitorEngine::start_with_source(cfg, second_source, &dir.path).unwrap();
-    let handle = second.handle();
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    let request = pending.recv().await.unwrap();
-    assert_eq!(request.request.params["cursor"], "cursor-1");
-    respond(request, 1, true).await;
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    assert_eq!(
-        handle.incident(&incident.id).unwrap().unwrap().status,
-        IncidentStatus::Open
-    );
-    let request = next(&mut pending).await;
-    let mut reset = batch(&request.request, 1, json!({"ready":true}));
-    reset.generation = "g2".into();
-    request.reply.send(Ok(reset)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    assert_eq!(view(&handle).coverage, Coverage::Partial);
-    let request = next(&mut pending).await;
-    let mut fresh = batch(&request.request, 2, json!({"ready":true}));
-    fresh.generation = "g2".into();
-    request.reply.send(Ok(fresh)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Healthy);
-    assert_eq!(
-        handle.incident(&incident.id).unwrap().unwrap().status,
-        IncidentStatus::Resolved
-    );
-    second.shutdown().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn identity_failure_does_not_advance_checkpoint_and_shutdown_waits_for_active_calls() {
-    let dir = TestDir::new();
-    let (source, mut pending) = source();
-    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
-    let handle = engine.handle();
-    let request = pending.recv().await.unwrap();
-    let mut invalid = batch(&request.request, 1, json!({"ready":true}));
-    invalid.target_id = "other-target".into();
-    request.reply.send(Ok(invalid)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).coverage, Coverage::Unavailable);
-    assert_eq!(view(&handle).cursor, None);
-    let inflight = next(&mut pending).await;
-    assert!(inflight.request.params["cursor"].is_null());
-    engine.shutdown().await.unwrap();
-    assert!(!view(&handle).running);
-    assert!(matches!(
-        handle.acknowledge("missing", 1, "operator", "note"),
-        Err(MonitorError::Stopped)
-    ));
-}
-
-#[tokio::test(start_paused = true)]
-async fn numeric_and_string_rules_are_configurable_without_domain_code() {
-    for (operator, expected, observed) in [
-        (RuleOperator::Lt, json!(5), json!(3)),
-        (RuleOperator::Eq, json!("ready"), json!("ready")),
-    ] {
-        let dir = TestDir::new();
-        let (source, mut pending) = source();
-        let mut cfg = config();
-        cfg.monitors[0].rule = MonitorRule {
-            pointer: "/metrics/result".into(),
-            operator,
-            value: expected,
-            failure_samples: 1,
-            success_samples: 1,
-        };
-        let mut engine = MonitorEngine::start_with_source(cfg, source, &dir.path).unwrap();
-        let request = pending.recv().await.unwrap();
-        let sample_value = json!({"metrics":{"result":observed}});
-        let response = batch(&request.request, 1, sample_value.clone());
-        request.reply.send(Ok(response)).unwrap();
-        settle().await;
-        let snapshot = view(&engine.handle());
-        assert_eq!(snapshot.health, TargetHealth::Healthy);
-        assert_eq!(snapshot.last_value, Some(sample_value));
-        engine.shutdown().await.unwrap();
-    }
-    let mut cfg = config();
-    cfg.monitors[0].params = json!({"cursor":"forged"});
-    assert!(cfg.validate().is_err());
-    let mut cfg = config();
-    cfg.monitors[0].rule.pointer = "/bad~2pointer".into();
-    assert!(cfg.validate().is_err());
-}
-
-#[tokio::test(start_paused = true)]
-async fn batch_transitions_are_durable_and_final_uncertainty_cannot_clear_old_fault() {
-    let dir = TestDir::new();
-    let (source, mut pending) = source();
-    let mut cfg = config();
-    cfg.monitors[0].rule.success_samples = 1;
-    let mut engine = MonitorEngine::start_with_source(cfg, source, &dir.path).unwrap();
-    let handle = engine.handle();
-    respond(pending.recv().await.unwrap(), 1, false).await;
-    respond(next(&mut pending).await, 2, false).await;
-    let original = handle
-        .incidents()
-        .unwrap()
-        .into_iter()
-        .find(|i| i.kind == IncidentKind::Target)
-        .unwrap();
-    let request = next(&mut pending).await;
-    let mut mixed = batch(&request.request, 3, json!({"ready":true}));
-    mixed
-        .samples
-        .extend(batch(&request.request, 4, json!({"ready":false})).samples);
-    mixed.next_cursor = "cursor-4".into();
-    request.reply.send(Ok(mixed)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    assert_eq!(
-        handle.incident(&original.id).unwrap().unwrap().status,
-        IncidentStatus::Open
-    );
-    let request = next(&mut pending).await;
-    let mut transitions = batch(&request.request, 5, json!({"ready":false}));
-    transitions
-        .samples
-        .extend(batch(&request.request, 6, json!({"ready":true})).samples);
-    transitions
-        .samples
-        .extend(batch(&request.request, 7, json!({"ready":false})).samples);
-    transitions
-        .samples
-        .extend(batch(&request.request, 8, json!({"ready":false})).samples);
-    transitions.next_cursor = "cursor-8".into();
-    request.reply.send(Ok(transitions)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Unhealthy);
+    assert_eq!(handle.incident(&record.id).unwrap().unwrap(), acknowledged);
     assert!(
         handle
-            .incidents()
-            .unwrap()
-            .iter()
-            .any(|i| i.kind == IncidentKind::Target && i.status == IncidentStatus::Open)
+            .repair_incident(&record.id, "service", record.revision)
+            .is_ok()
+    );
+    assert!(
+        handle
+            .repair_incident(&record.id, "other", record.revision)
+            .is_err()
+    );
+    assert!(
+        handle
+            .repair_incident(&record.id, "service", acknowledged.revision + 1)
+            .is_err()
     );
     engine.shutdown().await.unwrap();
+    assert!(held.reply.is_closed());
+    assert!(
+        handle
+            .repair_incident(&record.id, "service", record.revision)
+            .is_err()
+    );
 }
 
 #[tokio::test(start_paused = true)]
-async fn empty_and_out_of_order_batches_cannot_accumulate_a_false_threshold() {
+async fn duplicate_age_is_ignored_but_immutable_conflicts_reject_the_entire_batch() {
     let dir = TestDir::new();
     let (source, mut pending) = source();
     let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
     let handle = engine.handle();
-    respond(pending.recv().await.unwrap(), 2, false).await;
+    respond(pending.recv().await.unwrap(), 1, false).await;
+    let original = receipts(&handle).remove(0);
+    handle.error_notifications().notified().await;
     let request = next(&mut pending).await;
-    let mut older = batch(&request.request, 1, json!({"ready":false}));
-    older.next_cursor = "cursor-2".into();
-    request.reply.send(Ok(older)).unwrap();
+    let mut duplicate = batch(&request.request, 1, json!({"detail":"node failure"}));
+    duplicate.errors[0].age_ms = 100_000;
+    request.reply.send(Ok(duplicate)).unwrap();
     settle().await;
-    assert_eq!(view(&handle).consecutive_failures, 1);
-    let request = next(&mut pending).await;
-    let mut empty = batch(&request.request, 2, json!({}));
-    empty.samples.clear();
-    request.reply.send(Ok(empty)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).consecutive_failures, 0);
-    respond(next(&mut pending).await, 3, false).await;
-    assert_eq!(view(&handle).consecutive_failures, 1);
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
+    assert_eq!(handle.incident(&original.id).unwrap().unwrap(), original);
     assert!(
-        !handle
-            .incidents()
-            .unwrap()
-            .iter()
-            .any(|i| i.kind == IncidentKind::Target)
+        tokio::time::timeout(
+            Duration::from_millis(1),
+            handle.error_notifications().notified()
+        )
+        .await
+        .is_err()
     );
+    for conflict in ["message", "fingerprint", "evidence", "sequence"] {
+        let request = next(&mut pending).await;
+        let mut response = batch(&request.request, 1, json!({"detail":"node failure"}));
+        match conflict {
+            "message" => response.errors[0].message = "changed".into(),
+            "fingerprint" => response.errors[0].fingerprint = "changed".into(),
+            "evidence" => response.errors[0].evidence = json!({"changed":true}),
+            _ => response.errors[0].sequence = 2,
+        }
+        let fresh = batch(&request.request, 3, json!({})).errors.remove(0);
+        response.errors.push(fresh);
+        response.next_cursor = "must-not-commit".into();
+        request.reply.send(Ok(response)).unwrap();
+        settle().await;
+        assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-1"));
+        assert_eq!(receipts(&handle), vec![original.clone()]);
+    }
     engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
-async fn maximum_alternating_batch_fits_atomic_journal_and_oversized_batch_is_rejected_safely() {
+async fn all_persisted_receipts_rebuild_dedup_beyond_the_recent_window() {
     let dir = TestDir::new();
     let (source, mut pending) = source();
-    let mut cfg = config();
-    let expected = "x".repeat(3000);
-    cfg.monitors[0].rule = MonitorRule {
-        pointer: "/value".into(),
-        operator: RuleOperator::Eq,
-        value: json!(expected),
-        failure_samples: 1,
-        success_samples: 1,
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    respond(pending.recv().await.unwrap(), 1, false).await;
+    for sequence in 2..=40 {
+        respond(next(&mut pending).await, sequence, false).await;
+    }
+    let original = receipts(&engine.handle());
+    engine.shutdown().await.unwrap();
+    let (source, mut pending) = self::source();
+    let mut restarted = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    let handle = restarted.handle();
+    assert_eq!(view(&handle).received_error_count, 40);
+    let request = pending.recv().await.unwrap();
+    assert_eq!(request.request.params["cursor"], "cursor-40");
+    let mut duplicate = batch(&request.request, 1, json!({"detail":"node failure"}));
+    duplicate.next_cursor = "cursor-40".into();
+    request.reply.send(Ok(duplicate)).unwrap();
+    settle().await;
+    assert_eq!(receipts(&handle), original);
+    let request = next(&mut pending).await;
+    let mut conflict = batch(&request.request, 1, json!({"changed":true}));
+    conflict.next_cursor = "wrong".into();
+    request.reply.send(Ok(conflict)).unwrap();
+    settle().await;
+    assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-40"));
+    assert_eq!(receipts(&handle), original);
+    restarted.shutdown().await.unwrap();
+    let (source, _) = self::source();
+    let mut changed = config();
+    changed.monitors[0].params = json!({"different":true});
+    assert!(MonitorEngine::start_with_source(changed, source, &dir.path).is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn generation_change_creates_new_receipts_and_retired_generation_is_rejected() {
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    let handle = engine.handle();
+    respond(pending.recv().await.unwrap(), 1, false).await;
+    let request = next(&mut pending).await;
+    let mut response = batch(&request.request, 1, json!({"detail":"node failure"}));
+    response.generation = "g2".into();
+    response.next_cursor = "g2-position".into();
+    request.reply.send(Ok(response)).unwrap();
+    settle().await;
+    assert_eq!(receipts(&handle).len(), 2);
+    assert_eq!(view(&handle).coverage, Coverage::Partial);
+    let request = next(&mut pending).await;
+    let mut retired = batch(&request.request, 2, json!({}));
+    retired.next_cursor = "retired".into();
+    request.reply.send(Ok(retired)).unwrap();
+    settle().await;
+    assert_eq!(view(&handle).cursor.as_deref(), Some("g2-position"));
+    assert_eq!(receipts(&handle).len(), 2);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn malformed_batches_preserve_cursor_and_original_receipts() {
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    let handle = engine.handle();
+    respond(pending.recv().await.unwrap(), 1, false).await;
+    for case in 0..12 {
+        let request = next(&mut pending).await;
+        let mut response = batch(&request.request, 2, json!({}));
+        match case {
+            0 => response.target_id = "other".into(),
+            1 => response.cursor = None,
+            2 => response.schema_version = 1,
+            3 => response.errors[0].message = "x".repeat(8193),
+            4 => response.errors[0].message = "bad\0message".into(),
+            5 => response.errors[0].fingerprint = "bad fingerprint".into(),
+            6 => response.errors[0].evidence = json!([1, 2]),
+            7 => response.errors[0].sequence = 9_007_199_254_740_993,
+            8 => response.errors[0].age_ms = 9_007_199_254_740_993,
+            9 => {
+                let mut nested = json!({});
+                for _ in 0..26 {
+                    nested = json!({"child":nested});
+                }
+                response.errors[0].evidence = nested;
+            }
+            10 => response
+                .errors
+                .push(batch(&request.request, 1, json!({})).errors.remove(0)),
+            _ => {
+                response.errors[0].sequence = 1;
+                response.errors[0].id = "another-id".into();
+            }
+        }
+        request.reply.send(Ok(response)).unwrap();
+        settle().await;
+        assert_eq!(
+            view(&handle).cursor.as_deref(),
+            Some("cursor-1"),
+            "case {case}"
+        );
+        assert_eq!(receipts(&handle).len(), 1, "case {case}");
+    }
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn journal_capacity_failure_stops_instance_without_partial_receipts_or_cursor() {
+    use recuvora_host::persistence::incidents::IncidentStoreConfig;
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let limits = IncidentStoreConfig {
+        max_incidents: 1,
+        ..IncidentStoreConfig::default()
     };
-    let mut engine = MonitorEngine::start_with_source(cfg, source, &dir.path).unwrap();
+    let mut engine = MonitorEngine::start_with_source_and_incident_config(
+        config(),
+        source,
+        &dir.path,
+        limits.clone(),
+    )
+    .unwrap();
     let handle = engine.handle();
     let request = pending.recv().await.unwrap();
     let mut response = batch(&request.request, 1, json!({}));
-    response.samples.clear();
-    for sequence in 1..=32 {
-        let text = if sequence % 2 == 0 {
-            expected.clone()
-        } else {
-            "y".repeat(3000)
-        };
-        let mut sample = batch(&request.request, sequence, json!({"value":text}))
-            .samples
-            .remove(0);
-        sample.evidence = json!({"details":"e".repeat(500)});
-        response.samples.push(sample);
-    }
-    response.next_cursor = "cursor-32".into();
+    response
+        .errors
+        .push(batch(&request.request, 2, json!({})).errors.remove(0));
     request.reply.send(Ok(response)).unwrap();
     settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Healthy);
-    assert_eq!(
-        handle
-            .incidents()
-            .unwrap()
-            .iter()
-            .filter(|record| record.kind == IncidentKind::Target
-                && record.status == IncidentStatus::Resolved)
-            .count(),
-        16
-    );
-    assert!(handle.snapshot().unwrap().runtime_error.is_none());
-    let request = next(&mut pending).await;
-    let mut oversized = batch(&request.request, 33, json!({"value":expected}));
-    oversized.samples = (33..=65)
+    assert!(!handle.snapshot().unwrap().running);
+    assert!(handle.snapshot().unwrap().runtime_error.is_some());
+    assert!(receipts(&handle).is_empty());
+    assert_eq!(view(&handle).cursor, None);
+    assert!(engine.shutdown().await.is_err());
+    let (source, _) = self::source();
+    let mut reopened =
+        MonitorEngine::start_with_source_and_incident_config(config(), source, &dir.path, limits)
+            .unwrap();
+    assert_eq!(view(&reopened.handle()).cursor, None);
+    assert!(receipts(&reopened.handle()).is_empty());
+    reopened.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn maximum_error_batch_is_atomic_and_oversized_batch_is_rejected() {
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    let handle = engine.handle();
+    let request = pending.recv().await.unwrap();
+    let mut response = batch(&request.request, 1, json!({}));
+    response.errors = (1..=32)
         .map(|sequence| {
-            batch(&request.request, sequence, json!({"value":"x"}))
-                .samples
-                .remove(0)
+            let mut log = batch(
+                &request.request,
+                sequence,
+                json!({"padding":"e".repeat(3000)}),
+            )
+            .errors
+            .remove(0);
+            log.message = "m".repeat(4700);
+            log
         })
         .collect();
-    request.reply.send(Ok(oversized)).unwrap();
+    assert!(serde_json::to_vec(&response).unwrap().len() < 256 * 1024);
+    request.reply.send(Ok(response)).unwrap();
     settle().await;
-    assert_eq!(view(&handle).coverage, Coverage::Unavailable);
-    assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-32"));
     assert!(handle.snapshot().unwrap().runtime_error.is_none());
+    assert_eq!(receipts(&handle).len(), 32);
     let request = next(&mut pending).await;
-    let mut disordered = batch(&request.request, 34, json!({"value":"x"}));
-    disordered
-        .samples
-        .extend(batch(&request.request, 33, json!({"value":"x"})).samples);
-    request.reply.send(Ok(disordered)).unwrap();
+    let mut response = batch(&request.request, 33, json!({}));
+    response.errors = (33..=64)
+        .map(|sequence| {
+            let mut log = batch(
+                &request.request,
+                sequence,
+                json!({"padding":"e".repeat(4000)}),
+            )
+            .errors
+            .remove(0);
+            log.message = "m".repeat(8192);
+            log
+        })
+        .collect();
+    request.reply.send(Ok(response)).unwrap();
     settle().await;
-    assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-32"));
-    assert!(view(&handle).last_error.unwrap().contains("out of order"));
-    let request = next(&mut pending).await;
-    let mut reused = batch(&request.request, 33, json!({"value":"x"}));
-    let mut contradictory = batch(&request.request, 34, json!({"value":"y"}))
-        .samples
-        .remove(0);
-    contradictory.id = reused.samples[0].id.clone();
-    reused.samples.push(contradictory);
-    request.reply.send(Ok(reused)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-32"));
-    assert!(view(&handle).last_error.unwrap().contains("identity"));
+    assert_eq!(receipts(&handle).len(), 32);
+    assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-1"));
     engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_waits_for_original_source_future_after_cancellation() {
+    let dir = TestDir::new();
+    let (source, mut pending, _) = inventory_source();
+    let mut engine = MonitorEngine::start_with_source(
+        config(),
+        Arc::new(HeldObservationSource(source)),
+        &dir.path,
+    )
+    .unwrap();
+    let handle = engine.handle();
+    let held = pending.recv().await.unwrap();
+    let shutdown = tokio::spawn(async move { engine.shutdown().await });
+    settle().await;
+    assert!(!shutdown.is_finished());
+    assert!(!handle.snapshot().unwrap().running);
+    let response = batch(&held.request, 1, json!({}));
+    held.reply.send(Ok(response)).unwrap();
+    shutdown.await.unwrap().unwrap();
+    assert!(receipts(&handle).is_empty());
 }
 
 #[tokio::test(start_paused = true)]
 async fn empty_engine_drop_releases_store_even_when_handle_is_retained() {
     let dir = TestDir::new();
     let cfg = MonitorsConfig {
-        schema_version: 1,
+        schema_version: 2,
         discoveries: vec![],
         monitors: vec![],
     };
@@ -1018,41 +996,94 @@ async fn empty_engine_drop_releases_store_even_when_handle_is_retained() {
     second.shutdown().await.unwrap();
 }
 
+#[test]
+fn old_rules_and_observation_wire_fields_are_rejected() {
+    let mut cfg = serde_json::to_value(config()).unwrap();
+    cfg["monitors"][0]["rule"] = json!({"pointer":"/ready"});
+    assert!(serde_json::from_value::<MonitorsConfig>(cfg).is_err());
+    assert!(serde_json::from_value::<ObservationBatch>(json!({
+        "schema_version":1,"target_id":"service","source_id":"ready-probe","generation":"g1",
+        "cursor":null,"next_cursor":"1","coverage":"complete","has_more":false,"error":null,"samples":[]
+    })).is_err());
+}
+
 #[tokio::test(start_paused = true)]
-async fn unsafe_integer_precision_and_deep_evidence_are_observation_failures() {
+async fn published_error_log_example_is_accepted_without_health_fields() {
+    let example: ErrorLogBatch =
+        serde_json::from_str(include_str!("../docs/extensions/examples/error-logs.json")).unwrap();
     let dir = TestDir::new();
     let (source, mut pending) = source();
     let mut cfg = config();
-    cfg.monitors[0].rule.value = json!(9_007_199_254_740_993_u64);
-    assert!(cfg.validate().is_err());
-    cfg.monitors[0].rule.value = json!(9_007_199_254_740_992_u64);
-    cfg.monitors[0].rule.success_samples = 1;
+    cfg.monitors[0].target_id = example.target_id.clone();
+    cfg.monitors[0].source_id = example.source_id.clone();
     let mut engine = MonitorEngine::start_with_source(cfg, source, &dir.path).unwrap();
+    let original = serde_json::to_value(&example.errors[0]).unwrap();
+    pending
+        .recv()
+        .await
+        .unwrap()
+        .reply
+        .send(Ok(example))
+        .unwrap();
+    settle().await;
     let handle = engine.handle();
-    let request = pending.recv().await.unwrap();
-    let oversized_integer = batch(
-        &request.request,
-        1,
-        json!({"ready":9_007_199_254_740_993_u64}),
-    );
-    request.reply.send(Ok(oversized_integer)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).health, TargetHealth::Unknown);
-    assert_eq!(view(&handle).coverage, Coverage::Partial);
-    let request = next(&mut pending).await;
-    let mut deep = json!({});
-    for _ in 0..40 {
-        deep = json!({"nested":deep});
+    assert_eq!(receipts(&handle).remove(0).evidence["log"], original);
+    let snapshot = serde_json::to_value(view(&handle)).unwrap();
+    assert!(snapshot.get("health").is_none());
+    assert!(snapshot.get("consecutive_failures").is_none());
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn unchanged_empty_batches_refresh_liveness_without_appending_journal() {
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    respond(pending.recv().await.unwrap(), 1, true).await;
+    let committed_bytes = std::fs::metadata(dir.path.join("incidents.jsonl"))
+        .unwrap()
+        .len();
+    for _ in 0..3 {
+        respond(next(&mut pending).await, 1, true).await;
     }
-    let mut response = batch(
-        &request.request,
-        2,
-        json!({"ready":9_007_199_254_740_992_u64}),
+    assert_eq!(
+        std::fs::metadata(dir.path.join("incidents.jsonl"))
+            .unwrap()
+            .len(),
+        committed_bytes
     );
-    response.samples[0].evidence = deep;
-    request.reply.send(Ok(response)).unwrap();
-    settle().await;
-    assert_eq!(view(&handle).coverage, Coverage::Unavailable);
-    assert!(handle.snapshot().unwrap().runtime_error.is_none());
+    assert_eq!(view(&engine.handle()).freshness, Freshness::Fresh);
+    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn empty_retired_generations_cannot_be_forgotten_and_replayed() {
+    let dir = TestDir::new();
+    let (source, mut pending) = source();
+    let mut engine = MonitorEngine::start_with_source(config(), source, &dir.path).unwrap();
+    for generation in 0..=16 {
+        let request = if generation == 0 {
+            pending.recv().await.unwrap()
+        } else {
+            next(&mut pending).await
+        };
+        let mut response = batch(&request.request, generation + 1, json!({}));
+        response.errors.clear();
+        response.generation = format!("g{generation}");
+        request.reply.send(Ok(response)).unwrap();
+        settle().await;
+    }
+    let handle = engine.handle();
+    assert_eq!(view(&handle).generation.as_deref(), Some("g16"));
+    for generation in ["g17", "g0"] {
+        let request = next(&mut pending).await;
+        let mut response = batch(&request.request, 100, json!({}));
+        response.errors.clear();
+        response.generation = generation.into();
+        request.reply.send(Ok(response)).unwrap();
+        settle().await;
+        assert_eq!(view(&handle).generation.as_deref(), Some("g16"));
+        assert_eq!(view(&handle).cursor.as_deref(), Some("cursor-17"));
+    }
     engine.shutdown().await.unwrap();
 }

@@ -2,7 +2,7 @@
 use super::shared::{Shared, worker_finished};
 use super::state::MonitorState;
 use super::support::DISCOVERY_INVALIDATED;
-use super::{Coverage, MonitorError, ObservationSource, TargetHealth};
+use super::{Coverage, MonitorError, ObservationSource};
 use crate::runtime::operation::Cancellation;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -29,7 +29,6 @@ pub(super) fn launch_monitor(
             && let Some(view) = views.get_mut(&id)
         {
             view.running = false;
-            view.health = TargetHealth::Unknown;
         }
         worker_finished(&shared).await;
     });

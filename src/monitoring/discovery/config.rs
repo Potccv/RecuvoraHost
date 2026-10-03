@@ -117,7 +117,7 @@ pub(in crate::monitoring) fn validate(config: &MonitorsConfig) -> Result<(), Mon
             ));
         }
         MonitorsConfig {
-            schema_version: 1,
+            schema_version: 2,
             monitors: vec![item.template.clone()],
             discoveries: vec![],
         }
@@ -145,7 +145,7 @@ pub(in crate::monitoring) fn validate(config: &MonitorsConfig) -> Result<(), Mon
         let mut expanded = item.template.clone();
         expanded.params[&item.parameter] = json!("k".repeat(64));
         MonitorsConfig {
-            schema_version: 1,
+            schema_version: 2,
             monitors: vec![expanded],
             discoveries: vec![],
         }

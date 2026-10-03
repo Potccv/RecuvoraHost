@@ -86,8 +86,31 @@ impl IncidentLedger {
             }
             bounded_text(&signal.target_id, 256, "target id", false)?;
             bounded_text(&signal.rule_id, 256, "rule id", false)?;
-            bounded_text(&signal.summary, 2048, "summary", false)?;
-            bounded_object(&signal.evidence, MAX_EVIDENCE_BYTES, "evidence")?;
+            bounded_text(
+                &signal.summary,
+                if signal.kind == IncidentKind::ErrorLog {
+                    8192
+                } else {
+                    2048
+                },
+                "summary",
+                false,
+            )?;
+            bounded_object(
+                &signal.evidence,
+                if signal.kind == IncidentKind::ErrorLog {
+                    64 * 1024
+                } else {
+                    MAX_EVIDENCE_BYTES
+                },
+                "evidence",
+            )?;
+            if signal.kind == IncidentKind::ErrorLog && signal.condition != SignalCondition::Active
+            {
+                return Err(IncidentError::Invalid(
+                    "received error logs cannot be cleared or reclassified".into(),
+                ));
+            }
             let key = (
                 signal.monitor_id.clone(),
                 signal.target_id.clone(),
@@ -107,6 +130,16 @@ impl IncidentLedger {
                 })
                 .or_else(|| self.active.get(&key).and_then(|id| self.records.get(id)))
                 .filter(|record| record.status != IncidentStatus::Resolved);
+            if let Some(current) = current
+                && signal.kind == IncidentKind::ErrorLog
+            {
+                if current.summary != signal.summary || current.evidence != signal.evidence {
+                    return Err(IncidentError::Conflict(
+                        "error log identity was reused with different content".into(),
+                    ));
+                }
+                continue;
+            }
             let mut record = match current {
                 Some(current) => {
                     timestamp = timestamp

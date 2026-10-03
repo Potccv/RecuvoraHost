@@ -1,5 +1,5 @@
 //! Trusted monitor definitions, bounded loading and source identity binding.
-use super::{MonitorDiscovery, MonitorError, MonitorRule, discovery};
+use super::{MonitorDiscovery, MonitorError, discovery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -34,7 +34,6 @@ pub struct MonitorDefinition {
     pub timeout_ms: u64,
     pub stale_after_ms: u64,
     pub startup_grace_ms: u64,
-    pub rule: MonitorRule,
 }
 
 impl MonitorsConfig {
@@ -56,8 +55,8 @@ impl MonitorsConfig {
 
     pub fn validate(&self) -> Result<(), MonitorError> {
         let invalid = |message: &str| MonitorError::Configuration(message.into());
-        if self.schema_version != 1 || self.monitors.len() > 64 {
-            return Err(invalid("expected schema_version 1 and at most 64 monitors"));
+        if self.schema_version != 2 || self.monitors.len() > 64 {
+            return Err(invalid("expected schema_version 2 and at most 64 monitors"));
         }
         let mut ids = BTreeSet::new();
         for item in &self.monitors {
@@ -100,14 +99,9 @@ impl MonitorsConfig {
                 || !(1..=30_000).contains(&item.timeout_ms)
                 || !(10..=86_400_000).contains(&item.stale_after_ms)
                 || !(10..=86_400_000).contains(&item.startup_grace_ms)
-                || !(1..=1000).contains(&item.rule.failure_samples)
-                || !(1..=1000).contains(&item.rule.success_samples)
             {
-                return Err(invalid(
-                    "monitor durations or sample thresholds outside supported limits",
-                ));
+                return Err(invalid("monitor durations outside supported limits"));
             }
-            item.rule.validate()?;
         }
         if serde_json::to_vec(self).map_or(true, |v| v.len() > MAX_CONFIG) {
             return Err(invalid("configuration exceeds 256 KiB"));
@@ -119,6 +113,7 @@ impl MonitorsConfig {
 
 pub(super) fn binding(config: &MonitorDefinition) -> Result<String, MonitorError> {
     serde_json::to_string(&(
+        "node_error_v2",
         &config.target_id,
         &config.source_id,
         &config.extension_id,

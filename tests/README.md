@@ -13,8 +13,8 @@
 | CLI与使用者 | help、严格参数、配置、模拟测试、Harness项目/文本选择、共同期限与Unknown输出 |
 | HTTP应用 | Bearer、来源、权限、请求大小、稳定操作ID、回执、分页与重启 |
 | 恢复流程管理 | 原始任务/审批类型、`result_check` 与 `checked_at_ms`、审批与任务revision、可信actor、显式配置及容量、共享目标所有权、故障登记权威、暂停恢复与根据节点证据核实结果 |
-| 监控与故障 | 摘要/详情、确认revision、关联修复、无权限及陈旧状态 |
-| 插件与观测记录 | 只读描述、schema/限额、配置绑定、网络来源、游标与限制结果数量的查询 |
+| 错误接收与故障 | 原文与证据、独立不可变收据、重启去重、游标原子提交、来源异常、确认 revision 与权限 |
+| 插件与错误记录 | 只读描述、schema/限额、Node 身份、持久错误分页；日志 GET 不调用 Node 或推进接收检查点 |
 | 插件独立页面 | `ui_links.rs` 检查可选能力、地址绑定、描述/revision 校验、目录权限、显式刷新、容量、回调拒绝及关闭；使用隔离协议替身，不执行网页或客户端 |
 | 外部静态文件 | 固定允许表、编码越界/未知路径、认证隔离、启动快照、缺失/超限及未配置 |
 
@@ -24,7 +24,7 @@
 
 `network_transport` 固定验证回调 wire 分类、派发前取消零调用、派发后断连/协议错误不重放、Unknown 不被顶层成功覆盖、取消排空保留未知回调证据及收尾失败。`remote_harness` 覆盖工具 Unknown/Cancelled/Rejected 与输出超限，并对 projects/create_project/run 检查必填输入零派发、输出声明限额、有效声明和容量释放；网络替身不能证明真实业务恢复。
 
-派发门回归验证网络握手后的最终复核、拒绝零派发和发送后立即释放；`recovery_incident_guard` 使用实际 MonitorIncidentGuard 和 HTTP 替身验证门内过期证据不能派发，观察/确认提交等待或拒绝忙态，定时器不会因持门阻塞。
+派发门回归验证网络握手后的最终复核、拒绝零派发和发送后立即释放；`recovery_incident_guard` 使用实际 MonitorIncidentGuard 和 HTTP 替身验证门内错误收据身份或内容不符不能派发，历史日志不因 age_ms 过大而拒绝，观察/确认提交等待或拒绝忙态，定时器不会因持门阻塞。
 
 Core 作为生产依赖编译；文件路径保护与测试临时目录规则由 Host 实现和验证。Host 维护本机文件动作的边界测试，control_incidents 测试维护故障与检查点约束，Core 单独维护审批、提交、知识、恢复与引擎测试。`repair_backend` 使用隔离网络节点验证实际 Host 初始化、人工审批、正常执行、回执丢失后的执行结果核实、修复经验中的实际产物隔离与关闭后重开；这些检查不能代替真实节点或业务验收。
 
@@ -56,7 +56,7 @@ cargo test --locked --test ui_contract external_ui_assets_and_http_contract -- -
 
 两个用例都使用真实 HTTP，但不执行 UI 的 `api.js`，不验证 JavaScript 客户端的错误转换、自动重试策略或浏览器/Tauri 交互。客户端行为由 UI 项目另行验证；这些用例也不调用实际模型/节点，不证明业务恢复或跨机部署。全部测试都不能把确认收到、请求接受或文本读回当作授权与恢复事实。规则见 [AGENTS](AGENTS.md)。
 
-恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 schema 2、独立 executor、ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
+恢复测试使用 Host 的实际 FileTargetOwnership，并为独立用例配置各自的隔离权威目录。recovery_incident_guard 验证未绑定拒绝、不同存储同目标互斥、未完成任务重开和等待当前调用结束后的所有权转交；repair_backend 验证 Unknown 关闭后不能被新状态目录接管，原存储仍可恢复。缺少 IncidentGuard 时，新故障登记即被拒绝；HTTP 夹具显式提供限定故障身份的权威。配置加载回归确认 Host schema 3 / Core schema 2、独立 executor、ownership_dir 必填、目录隔离、源码拒绝和不创建存储。
 
 完整检查结果见[实现状态](../docs/status.md#自动验证)。协议/网络测试通过不代替实际节点或业务恢复验收。
 

@@ -188,6 +188,8 @@ fn config() -> RecoveryConfig {
 }
 fn problem() -> ProblemContext {
     ProblemContext {
+        origin: Default::default(),
+        report: None,
         incident_id: "incident-a".into(),
         incident_revision: 1,
         target_id: "target-a".into(),

@@ -1,6 +1,6 @@
 //! External extension adapter for the Host monitoring source port.
 
-use crate::integrations::extensions::ExtensionRegistry;
+use crate::integrations::extensions::{ExtensionKind, ExtensionRegistry};
 use crate::monitoring::{
     DiscoveryFuture, MonitorError, ObservationFuture, ObservationRequest, ObservationSource,
 };
@@ -46,6 +46,16 @@ impl ObservationSource for RegistryObservationSource {
         cancellation: Cancellation,
     ) -> ObservationFuture<'_> {
         Box::pin(async move {
+            if self
+                .0
+                .metadata(&request.extension_id)
+                .is_none_or(|metadata| metadata.kind != ExtensionKind::Node)
+            {
+                return Err(MonitorError::Observation(
+                    "error logs require a registered Node source".into(),
+                ));
+            }
+
             let value = self
                 .0
                 .call_read_only(

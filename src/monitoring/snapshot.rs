@@ -1,15 +1,7 @@
 //! Public diagnostic views, separate from persistent incident authority.
-use super::DiscoverySnapshot;
+use super::{DiscoverySnapshot, NodeErrorLog};
 use serde::Serialize;
-use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TargetHealth {
-    Unknown,
-    Healthy,
-    Unhealthy,
-}
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Freshness {
@@ -36,16 +28,12 @@ pub struct MonitorSnapshot {
     pub contract: String,
     pub version: u32,
     pub method: String,
-    pub health: TargetHealth,
     pub freshness: Freshness,
     pub coverage: Coverage,
     pub running: bool,
     pub last_received_at_ms: Option<u64>,
-    pub last_sample_id: Option<String>,
-    pub last_value: Option<Value>,
-    pub sample_age_ms: Option<u64>,
-    pub consecutive_failures: u32,
-    pub consecutive_successes: u32,
+    pub received_error_count: u64,
+    pub last_error_log: Option<NodeErrorLog>,
     pub generation: Option<String>,
     pub cursor: Option<String>,
     pub last_error: Option<String>,

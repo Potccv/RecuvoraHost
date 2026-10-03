@@ -1,5 +1,5 @@
 //! Shared runtime ownership, registration gate and active worker tracking.
-use super::{DiscoverySnapshot, MonitorDefinition, MonitorError, MonitorSnapshot, TargetHealth};
+use super::{DiscoverySnapshot, MonitorDefinition, MonitorError, MonitorSnapshot};
 use crate::persistence::incidents::IncidentStore;
 use crate::runtime::operation::Cancellation;
 use std::collections::BTreeMap;
@@ -11,7 +11,7 @@ pub(super) struct Shared {
     pub(super) store: Mutex<IncidentStore>,
     pub(super) definitions: Mutex<BTreeMap<String, MonitorDefinition>>,
     pub(super) views: Mutex<BTreeMap<String, MonitorSnapshot>>,
-    pub(super) fresh_until: Mutex<BTreeMap<String, tokio::time::Instant>>,
+    pub(super) received: Arc<tokio::sync::Notify>,
     pub(super) discoveries: Mutex<BTreeMap<String, DiscoverySnapshot>>,
     pub(super) registration: Arc<tokio::sync::Mutex<()>>,
     pub(super) error: Mutex<Option<String>>,
@@ -34,7 +34,6 @@ impl Shared {
         if let Ok(mut views) = self.views.lock() {
             for view in views.values_mut() {
                 view.running = false;
-                view.health = TargetHealth::Unknown;
                 view.last_error = Some(message.clone());
             }
         }

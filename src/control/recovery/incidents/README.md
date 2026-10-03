@@ -12,7 +12,9 @@
 
 ## 领域行为
 
-同一监控、目标、规则和 `IncidentKind` 的未解除异常归并到同一故障轮次，重复异常只增加 `occurrences`。Clear 解除该轮次，随后出现 Active 创建新轮次；Unknown 保留不确定观察，不能解除故障。同一批次中的信号严格按顺序计算，异常、解除、复发可以形成多个独立轮次。
+`IncidentKind::ErrorLog` 保存 Node 已识别的错误。每条来源日志生成独立稳定收件身份；Active 只表示收到日志，不表示目标当前不健康。同身份同内容重试不增加 revision 或 occurrences，改写原文或证据拒绝；Clear 与 Unknown 不适用于错误收据。原文最多 8192 UTF-8 字节；为容纳 JSON 转义后的完整日志和来源证据，收据证据最多 64 KiB。
+
+低层 Target 与 Coverage 保留故障轮次语义：同一监控、目标、规则和种类的未解除异常归并，Clear 解除当前轮次，随后 Active 创建新轮次；Unknown 不解除故障。Node 错误接收不产生 Target，来源异常单独记录为 Coverage；来源恢复不影响 ErrorLog。
 
 `prepare_acknowledge` 校验故障记录版本号与 Open 状态，只记录可信调用方的关注归属，不解除故障、不批准修复。调用方负责认证，`actor` 只是审计字段。观察时间回拨时保留单调展示时间，序号继续负责顺序；检查点与整批信号在验证失败或容量不足时一起拒绝。
 

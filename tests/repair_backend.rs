@@ -175,6 +175,8 @@ fn config() -> RecoveryConfig {
 }
 fn problem() -> ProblemContext {
     ProblemContext {
+        origin: Default::default(),
+        report: None,
         incident_id: "incident-1".into(),
         incident_revision: 1,
         target_id: "target".into(),
@@ -522,12 +524,16 @@ async fn run() -> TestResult {
 
 async fn managed_http(mode: &str) -> TestResult {
     use recuvora_host::configuration::RecoveryHostConfig;
-    use recuvora_host::integrations::recovery::IncidentTrigger;
-    use recuvora_host::monitoring::{MonitorDefinition, MonitorRule, MonitorsConfig, RuleOperator};
+    use recuvora_host::monitoring::{MonitorDefinition, MonitorsConfig};
     use recuvora_host::server::{Console, ServerConfig};
     let dir = TestDir::new()?;
-    let peer =
-        network_peer::PeerServer::start(fixture, BTreeMap::from([("mode".into(), mode.into())]))?;
+    let peer = network_peer::PeerServer::start(
+        fixture,
+        BTreeMap::from([
+            ("mode".into(), mode.into()),
+            ("error-stream".into(), "true".into()),
+        ]),
+    )?;
     let harness_path = dir.path.join("harnesses.json");
     let extension_path = dir.path.join("extensions.json");
     let monitor_path = dir.path.join("monitors.json");
@@ -560,6 +566,11 @@ async fn managed_http(mode: &str) -> TestResult {
             version: 1,
             method: "run".into(),
         }))
+        .chain(std::iter::once(AllowedMethod {
+            contract: "example.observation".into(),
+            version: 2,
+            method: "observe".into(),
+        }))
         .collect();
     std::fs::write(
         &extension_path,
@@ -575,7 +586,7 @@ async fn managed_http(mode: &str) -> TestResult {
                     namespaces: vec!["example.observation".into()],
                     allow_calls: vec![AllowedMethod {
                         contract: "example.observation".into(),
-                        version: 1,
+                        version: 2,
                         method: "observe".into(),
                     }],
                     allow_nodes: vec![],
@@ -596,47 +607,33 @@ async fn managed_http(mode: &str) -> TestResult {
     std::fs::write(
         &monitor_path,
         serde_json::to_vec(&MonitorsConfig {
-            schema_version: 1,
+            schema_version: 2,
             discoveries: vec![],
             monitors: vec![MonitorDefinition {
                 id: "target-monitor".into(),
                 target_id: "target".into(),
                 source_id: "provider-source".into(),
                 view_role: None,
-                extension_id: "observation-plugin".into(),
+                extension_id: "fixture-node".into(),
                 contract: "example.observation".into(),
-                version: 1,
+                version: 2,
                 method: "observe".into(),
                 params: json!({}),
                 interval_ms: 10,
                 timeout_ms: 1000,
                 stale_after_ms: 30000,
                 startup_grace_ms: 1000,
-                rule: MonitorRule {
-                    pointer: "/ready".into(),
-                    operator: RuleOperator::Eq,
-                    value: json!(true),
-                    failure_samples: 1,
-                    success_samples: 1,
-                },
             }],
         })?,
     )?;
     let mut core = config();
     core.approval.reviewer = ReviewerConfig::Human;
     let settings = RecoveryHostConfig {
-        schema_version: 2,
+        schema_version: 3,
         executor: executor_config(),
         data_dir: dir.path.join("recovery-state"),
         ownership_dir: dir.path.join("target-ownership"),
         recovery: core,
-        triggers: vec![IncidentTrigger {
-            monitor_id: "target-monitor".into(),
-            rule_id: "target-monitor".into(),
-            fingerprint: "workload-failure".into(),
-            keywords: vec!["failure".into()],
-            conditions: current_facts(),
-        }],
         interval_ms: 10,
         approval_store: Default::default(),
         knowledge_store: Default::default(),
@@ -662,7 +659,6 @@ async fn managed_http(mode: &str) -> TestResult {
         repair_config: None,
         monitors_config: Some(monitor_path),
         recovery_config: Some(recovery_path),
-        log_sources: vec![],
         ui_dir: None,
     };
     let (console, engine) = Console::open(cfg.clone()).await?;
@@ -685,6 +681,16 @@ async fn managed_http(mode: &str) -> TestResult {
         .await?;
     assert_eq!(status["running"], true);
     let task = wait_http_stage(&client, &url, token, "awaiting_approval").await?;
+    assert_eq!(task["problem"]["origin"], "error_log");
+    assert_eq!(task["problem"]["keywords"], json!([]));
+    assert_eq!(
+        task["problem"]["summary"],
+        "Node reported workload failure\nOriginal error detail"
+    );
+    assert_eq!(
+        task["problem"]["report"]["evidence"],
+        json!({"record":"error-1"})
+    );
     let id = task["id"].as_str().ok_or("task ID required")?;
     let approval_url = format!("{url}/api/v1/recovery/tasks/{id}/approval");
     let approval: Value = client
@@ -746,7 +752,7 @@ async fn managed_http(mode: &str) -> TestResult {
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let knowledge: Value = client.post(format!("{url}/api/v1/recovery/knowledge/search")).bearer_auth(token).json(&json!({"conditions":{"release":"v1","fault_fingerprint":"workload-failure"},"keywords":["failure"],"limit":5})).send().await?.error_for_status()?.json().await?;
+        let knowledge: Value = client.post(format!("{url}/api/v1/recovery/knowledge/search")).bearer_auth(token).json(&json!({"conditions":{"release":"v1","fault_fingerprint":"workload-failure"},"keywords":[],"limit":5})).send().await?.error_for_status()?.json().await?;
         assert!(knowledge.get("items").is_none());
         if !knowledge["experiences"]
             .as_array()
@@ -823,10 +829,10 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
     else {
         return Err("missing handshake".into());
     };
-    let contracts = if kind == ExtensionKind::Plugin {
+    let mut contracts: Vec<_> = if kind == ExtensionKind::Plugin {
         vec![ContractDeclaration {
             id: "example.observation".into(),
-            version: 1,
+            version: 2,
             methods: vec![MethodDeclaration {
                 name: "observe".into(),
                 read_only: true,
@@ -870,6 +876,18 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
         })
         .collect()
     };
+    if kind == ExtensionKind::Node && session.env("error-stream").is_some() {
+        contracts.push(ContractDeclaration {
+            id: "example.observation".into(),
+            version: 2,
+            methods: vec![MethodDeclaration {
+                name: "observe".into(),
+                read_only: true,
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+            }],
+        });
+    }
     session.write(Message::Ready {
         metadata: ExtensionMetadata {
             protocol_version: 1,
@@ -895,12 +913,12 @@ fn fixture(mut session: network_peer::Session) -> TestResult {
     };
     let result = if contract == "example.observation" {
         assert_eq!(method, "observe");
-        let sequence = params["cursor"]
-            .as_str()
-            .and_then(|cursor| cursor.parse::<u64>().ok())
-            .unwrap_or_default()
-            + 1;
-        json!({"schema_version":1,"target_id":params["target_id"],"source_id":params["source_id"],"generation":"fixture-g1","cursor":params["cursor"],"next_cursor":sequence.to_string(),"coverage":"complete","has_more":false,"error":null,"samples":[{"id":format!("sample-{sequence}"),"sequence":sequence,"age_ms":0,"value":{"ready":false},"evidence":{}}]})
+        let errors = if params["cursor"].is_null() {
+            json!([{"id":"error-1","sequence":1,"age_ms":0,"fingerprint":"workload-failure","message":"Node reported workload failure\nOriginal error detail","evidence":{"record":"error-1"}}])
+        } else {
+            json!([])
+        };
+        json!({"schema_version":2,"target_id":params["target_id"],"source_id":params["source_id"],"generation":"fixture-g1","cursor":params["cursor"],"next_cursor":"1","coverage":"complete","has_more":false,"source_error":null,"errors":errors})
     } else if contract == "recuvora.repair" {
         assert_eq!(
             params

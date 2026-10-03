@@ -6,7 +6,7 @@
 
 服务配置显式填写 `recovery_config`，同时提供 Harness、扩展和监控配置。完整组合见 [服务模板](../profiles/server.recovery.example.json)，恢复配置见 [流程模板](../profiles/repair.recovery.example.json)。普通 Host 启动或插件接口登记不会自动派发修复。
 
-`RecoveryHostConfig.schema_version` 和内层 `recovery.schema_version` 都为 2。Host 配置包含 `data_dir`、必填共享 `ownership_dir`、`executor`、故障触发规则、调度间隔和存储限额。`executor` 管理具体脚本平台、语言及只读检查查询；Core 保存逻辑身份、目标事实和允许的动作种类。详细字段见[配置说明](configuration.md#恢复流程配置)。
+`RecoveryHostConfig.schema_version` 为 3，内层 `recovery.schema_version` 为 2。Host 配置包含 `data_dir`、必填共享 `ownership_dir`、`executor`、调度间隔和存储限额，不包含故障触发规则。Node 已识别的错误经持久接收后直接提交 Core；`executor` 管理具体脚本平台、语言及只读检查查询，Core 保存逻辑身份、错误报告和允许的动作种类。详细字段见[配置说明](configuration.md#恢复流程配置)。
 
 启动调度前，Host 为规范目标绑定 `FileTargetOwnership`。保护同一目标的所有恢复存储必须使用同一稳定所有权目录；未完成任务与 Unknown 在关闭或进程退出后仍保留持久所有者，只有原存储可继续恢复。全部终结且无未知执行审批后，Host 才释放所有权。低层 `open_recovery(data_dir, config, executor)` 不启动调度；嵌入方须绑定 `TargetOwnership`、`IncidentGuard` 并负责关闭。
 
@@ -14,11 +14,11 @@
 
 `recovery.approval.allowed_action_kinds` 显式允许 `repair_with_harness`。Core 的 `Start` 聚合操作使用 `prepare_repair` 生成包含故障、当前观察、最多四条相关经验和可信委托的统一请求；`matched_experience_count` 记录本次查询的全部匹配数，`experiences` 只包含在请求预算内实际附带的经验，因此不能用空列表判断是否命中经验。命中经验与未命中经验使用同一 Harness 会话。知识读取失败不能降级为空经验，参考经验也不能生成权限。
 
-审核按 `human`、`harness` 或 `human_then_harness` 规则进行。批准绑定完整会话操作、当前政策、目标与期限；批准后仍复核当前故障、目标条件与一次许可。已提交的许可消费和操作身份不能在重启后重建成新的派发权。
+审核按 `human`、`harness` 或 `human_then_harness` 规则进行。批准绑定完整会话操作、当前政策、目标与期限；批准后仍复核原始错误收据、目标条件与一次许可。已提交的许可消费和操作身份不能在重启后重建成新的派发权。
 
 `NodeRepairBackend` 只提供 `inspect_target` 和 `apply_repair` 两个 Host 工具，不开放提供方原生 shell、文件或网络工具。`apply_repair` 在固定目标与 `executor` 配置范围内最多派发一次变更，调用节点的 `execute_script`。Core 的 `recovery.target.allowed_action_kinds` 限定具体动作，当前 Host 适配器只支持 `execute_script`。
 
-Host 校验脚本后封装为 `RepairArtifact { id, version, kind, payload, preconditions, generated_by_harness, generated_in_session }`。Core 不解析脚本语言或平台；Core 校验中立产物、可信会话归属、允许种类、精确前提和隔离。具体动作先通过 `SessionCommand::PrepareAction` 持久保存，再在实际发送前复核故障、政策、所有权和知识门。第二次变更被拒绝，失败或断连不会自动重试。
+Host 校验脚本后封装为 `RepairArtifact { id, version, kind, payload, preconditions, generated_by_harness, generated_in_session }`。Core 不解析脚本语言或平台；Core 校验中立产物、可信会话归属、允许种类、精确前提和隔离。具体动作先通过 `SessionCommand::PrepareAction` 持久保存，再在实际发送前复核错误收据、政策、所有权和知识门。第二次变更被拒绝，失败或断连不会自动重试。
 
 Host 从节点取得执行回执，模型最终文本不能声明执行成功。`execution_trace` 保存实际中立动作；独立 `verify` 决定业务结果。Unknown 保留原操作和实际动作隔离，`reconcile` 始终查询同一 operation_id。执行结束后的模型回答失败不能覆盖已取得的独立执行回执。
 
@@ -36,7 +36,9 @@ Host 从节点取得执行回执，模型最终文本不能声明执行成功。
 
 ## 故障与暂停任务
 
-调度器读取仍未解除的目标故障，按固定 monitor/rule 绑定生成 `ProblemContext`；采集不完整故障不能触发修复。重复通知和重启不重复创建同一故障任务。暂停和 Unknown 不会自动重执行。
+每条 Node 错误独立持久接收，调度器被收件通知唤醒后，将同目标错误提交为 `ProblemContext { origin: error_log, summary: 原文, report: 原始来源与证据 }`。fingerprint 来自 Node 描述，稳定 conditions 来自可信目标配置；Host 不做错误分类、健康阈值或 monitor/rule 筛选。Core 的 Received 语义仅确认报告存在，后续仍独立观察、审批、执行和验收，不把历史日志解释为当前健康状态。
+
+Core 忙时错误保留在持久收件，前一任务终态后继续交付。收件与 Core 任务使用稳定身份，即使提交后中断、重复读取或重启，也不重复创建同一任务；不同错误不会并入旧终态任务。空错误批次、采集不完整或失联不清除已接收日志，也不代替业务验收。暂停和 Unknown 不会自动重执行。
 
 人工决定只保存批准、拒绝或转交决定，已启用调度器随后继续处理获准任务。重启后的待执行任务暂停，必须携带当前任务 revision 显式 `resume`；原操作、审批期限和已消耗预算继续有效。
 

@@ -14,7 +14,7 @@ TLS 使用既有信任根和显式 PEM CA，节点 Bearer 从可信环境变量�
 
 ## 业务接口约定
 
-实现节点时，具体字段和载荷样例见[节点业务接口 v1](nodes.md)。
+实现节点时，具体字段和载荷样例见[节点业务接口](nodes.md)。
 
 独立插件页面的可选描述契约另见[插件独立页面约定 v1](pages.md)；它复用共同消息，接入状态见 [HOST-004](../status.md#host-004)。
 
@@ -23,7 +23,7 @@ TLS 使用既有信任根和显式 PEM CA，节点 Bearer 从可信环境变量�
 | `recuvora.harness` v1 | 远端项目、会话与受控工具回调；审核使用独立容量和无工具会话 |
 | `recuvora.repair` v1 | 节点 inspect/verify，以及仅使用 Core 许可后的 execute_script |
 | `recuvora.repair` v1 的可选 reconcile | 只读原操作执行事实；与独立 verify 共同用于 Core 的执行结果核实 |
-| 插件命名空间接口约定 | 明确获准的只读观察、发现与查询；登记不产生业务写权限 |
+| 插件命名空间接口约定 | 明确获准的 Node 错误批次 v2、发现与只读查询；登记不产生业务写权限 |
 | 声明式 UI view | Host 校验并过滤只读描述，不执行插件 HTML 或脚本 |
 
 repair 方法只能由 kind: node 提供；inspect、verify、可选 reconcile 必须声明 read_only:true，execute_script 必须为 false。普通公开只读路由不能调用 execute_script。节点 reconcile 的证据结构见[恢复流程](../recovery.md)；check_result 是 Host HTTP / 服务管理入口名称，不是节点 wire 方法。未声明或未获准的方法直接失败，不自动回退。

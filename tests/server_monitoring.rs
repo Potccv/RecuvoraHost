@@ -36,7 +36,7 @@ async fn incident_api_paginates_evidence_and_acknowledges_with_authenticated_rev
     }
     drop(store);
     let monitor_config = directory.join("monitors.json");
-    std::fs::write(&monitor_config, r#"{"schema_version":1,"monitors":[]}"#).unwrap();
+    std::fs::write(&monitor_config, r#"{"schema_version":2,"monitors":[]}"#).unwrap();
     cfg.monitors_config = Some(monitor_config);
     cfg.permissions.extend([
         "monitor.read".into(),

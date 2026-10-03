@@ -61,7 +61,7 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
         .unwrap();
     drop(incidents);
     let monitors_path = directory.join("monitors.json");
-    std::fs::write(&monitors_path, r#"{"schema_version":1,"monitors":[]}"#).unwrap();
+    std::fs::write(&monitors_path, r#"{"schema_version":2,"monitors":[]}"#).unwrap();
     cfg.monitors_config = Some(monitors_path);
     let repair_config = RepairConfig {
         schema_version: 1,

@@ -4,14 +4,14 @@
 
 | 公开模块 | 接口与能力 |
 | --- | --- |
-| [`control`](../../src/control/README.md) | `recovery::incidents` 的故障台账、活动事实及监控检查点 |
+| [`control`](../../src/control/README.md) | `recovery::incidents` 的错误收据、来源覆盖及接收检查点 |
 | [`boot`](../../src/boot/README.md) | `run_cli` 与可信服务装配；`host` 保留 HostConfig、MonitoringHostConfig、HostRuntime 及配置加载函数的兼容入口 |
 | [`application`](../../src/application/README.md) | `HostRuntime` 持有共享服务与关闭生命周期；`Application` 管理应用操作、持久回执、取消与能力调用 |
-| [`recovery`](../../src/recovery/README.md) | `RecoveryService`、`RecoveryScheduler`、`IncidentTrigger`、`RepairBackend`、`AuthorizedRepair`、`RepairActionGuard`、`IncidentGuard` 与 `TargetOwnership` |
+| [`recovery`](../../src/recovery/README.md) | `RecoveryService`、`RecoveryScheduler`、`ProblemOrigin`、`ErrorLogEvidence`、`RepairBackend`、`AuthorizedRepair`、`RepairActionGuard`、`IncidentGuard` 与 `TargetOwnership` |
 | [`configuration`](../../src/configuration/README.md) | `HostConfig`、`MonitoringHostConfig`、`RecoveryHostConfig::load`/`validate`；低层配置准备；`load_host_harness_config`/`load_host_repair_config` 增加应用源码边界及扩展控制路径保护 |
-| [`server`](../../src/server/README.md) | `ServerConfig`、`LogSourceConfig`/`LogResultMapping`、`ApiError`；`Console::open` 返回 console 与模拟 engine；`router` 接入 Axum；`Console::wait_for_idle`/`shutdown`，engine 另行关闭 |
+| [`server`](../../src/server/README.md) | `ServerConfig`、`ApiError`；`Console::open` 返回 console 与模拟 engine；`router` 接入 Axum；`Console::wait_for_idle`/`shutdown`，engine 另行关闭 |
 | [`harnesses`](../../src/harnesses/README.md) | `HarnessRegistryBuilder::register`/`build`；`HarnessRegistry::definitions`/`default_harness`/`list_projects`/`create_project`/`run`/关闭；提供方接口约定 `HarnessProvider`、`HarnessAdapterFactory`，受控工具接口约定 `HarnessToolHandler` |
-| [`monitoring`](../../src/monitoring/README.md) | `MonitorsConfig`、监控/发现配置与快照；`ObservationSource`；`MonitorEngine::start_with_source`/`start_with_source_and_incident_config`/`handle`/`shutdown`；`MonitorHandle` 查询定义、快照与故障、确认、执行前故障复核及等待当前任务结束 |
+| [`monitoring`](../../src/monitoring/README.md) | `MonitorsConfig`、`ErrorLogBatch`、`NodeErrorLog`、接收/发现配置与快照；`ObservationSource`；`MonitorEngine::start_with_source`/`start_with_source_and_incident_config`/`handle`/`shutdown`；`MonitorHandle` 查询定义、快照与故障、确认、执行前错误收据复核及等待当前任务结束 |
 | [`integrations`](../../src/integrations/README.md) | `extensions` 中的 `ExtensionsConfig`/`NetworkEndpoint`/`NodeSettings`/`ProtocolSettings`、`ExtensionRegistry::connect`/`connect_with_settings`/`call_read_only`/`ui_links`/`ui_links_catalog`/`refresh_ui_links`、声明/状态/接口归属查询与关闭，以及底层 `ExtensionClient`/`CallbackHandler`/`DispatchGuard`；`harness::RemoteHarnessFactory`；`monitoring::RegistryObservationSource`；`recovery::NodeRepairBackend`/`ScriptExecutorConfig` |
 | [`persistence`](../../src/persistence/README.md) | `ApprovalStore`、`IncidentStore`、`KnowledgeStore` 与 Host 存储限额；知识存储只登记完整修复经验；底层 `Journal` 只供可信宿主代码使用 |
 | [`runtime`](../../src/runtime/README.md) | `Runtime::new`/`add`/`validate`/`start`/`snapshot`/`shutdown`；`Module`/`ModuleMetadata`、`ServiceKey`、`ModuleContext`、类型化服务、事件订阅与实例资源 |
@@ -23,7 +23,9 @@
 
 `HostRuntime::open_recovery(data_dir, config, executor)` 是低层 Host 恢复流程打开入口，显式接收 `ScriptExecutorConfig`，不启动恢复流程调度器；嵌入方需通过 `RecoveryService::bind_target_ownership` 绑定共享 `TargetOwnership`，绑定 `IncidentGuard`，并负责关闭恢复流程。未绑定目标所有权不能提交或推进任务；未绑定故障权威不能登记新故障。`start_recovery` 从必填 `ownership_dir` 打开 Host 的 `FileTargetOwnership` 并绑定，然后持有恢复流程调度器；关闭先取消并等待正在处理的恢复任务结束，再释放监控和提供方。保护同一规范目标的所有恢复存储必须共用稳定的所有权目录，不能随状态目录更换。嵌入方负责认证调用者和维护控制路径隔离，直接调用库不经过 HTTP 权限检查。
 
-Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供故障及独立领域存储，自动恢复服务保存单一聚合日志；Host IncidentLedger 计算故障变化，Core RecoveryEngine/RecoverySession 计算完整恢复变化，可靠提交后才确认提案并取得 `ExecutionPermit` 和后续意图；模型与插件拿不到核心状态存储或自行构造执行许可的入口。`cli` 与 `presentation` 是内部模块，外部应用使用上述公开服务。
+Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供错误收件及独立领域存储，自动恢复服务保存单一聚合日志；Host IncidentLedger 保存不可变错误收据与来源覆盖记录，Core RecoveryEngine/RecoverySession 计算完整恢复变化，可靠提交后才确认提案并取得 `ExecutionPermit` 和后续意图；模型与插件拿不到核心状态存储或自行构造执行许可的入口。`cli` 与 `presentation` 是内部模块，外部应用使用上述公开服务。
+
+`RecoveryScheduler::start(recovery, monitor, interval)` 将已配置目标的每条错误收据交给 Core，不接收 Host 触发规则。`MonitorIncidentGuard::new(monitor)` 验证原始收据身份、内容与 revision，并返回 `IncidentReadiness::Received`。Core 的 `ProblemContext` 使用 `origin: ErrorLog`、完整原文 `summary` 及 `report: ErrorLogEvidence`；历史日志的存在不等于当前故障仍然活动。低层 `Incident` 来源仍需独立权威提供活动事实，不能冒用收到日志替代。
 
 协议类型与校验接口见 [Protocol Rust API](protocol.md)，应用职责与关闭顺序见 [架构](../architecture.md)。外部节点使用 [语言无关协议规范](../extensions/protocol.md)，不依赖本库。
 

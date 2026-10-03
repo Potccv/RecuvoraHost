@@ -9,7 +9,7 @@ Host 负责配置、认证、故障台账、服务装配、持久化、网络路
 Host 通过 control 管理故障事实，通过 persistence 与恢复服务实现 Core 能力接口、可靠提交及取消监督；当前存储和接入限制见 [HOST-003](docs/status.md#host-003)。
 
 - 通过 ws/wss/http/https 接入实现扩展协议 v1 的节点和插件，使用远端 Harness 发送 AI 请求、管理项目和受控工具。
-- 只读轮询、规则/时效/覆盖判定、动态发现与持久故障查询；监控和故障确认均不触发修复。
+- 只读接收 Node 错误日志、动态发现、持久收件与来源覆盖查询；显式启用恢复后直接交给 Core。
 - 通过显式 `recovery_config` 启动统一 Harness 修复、独立审核、节点执行、业务验收及经验总结；管理入口为 `/recovery`。
 - 保留 Windows 白名单内有界 UTF-8 文件替换的独立文本修复流程，以及不操作真实目标的模拟。
 - 提供单操作员 Bearer 认证、权限与 Origin 检查、持久操作回执和固定官方静态资产托管。
@@ -46,7 +46,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:7431/api/v1/bootstrap' -Headers @{ Auth
 
 批准、请求接受和动作回执分别表示不同事实。执行前由 Core 复核完整操作并发放一次许可；执行和审核使用独立会话。`Unknown` 表示外部执行结果无法确定，不能自动重放或通过更换状态目录绕过。完整规则见 [审批](docs/approval.md)与 [恢复流程](docs/recovery.md)。
 
-统一恢复模板采用带经验参考的 Harness 修复会话，业务结果确认后独立总结经验并评估可选脚本。恢复配置使用 schema 2，具体脚本平台与语言由 Host executor 配置管理，见[恢复流程](docs/recovery.md)。
+统一恢复模板采用带经验参考的 Harness 修复会话，业务结果确认后独立总结经验并评估可选脚本。Host 恢复配置使用 schema 3，内层 Core 配置仍为 schema 2，具体脚本平台与语言由 Host executor 配置管理，见[恢复流程](docs/recovery.md)。
 
 ## 文档与开发
 

@@ -2,6 +2,7 @@
 use super::{RecoveryError, service};
 use recuvora_core::recovery::{
     knowledge::{RepairArtifact, RepairOutcome},
+    planning::{ErrorLogEvidence, ProblemOrigin},
     workflow::{
         BusinessVerification, CheckedExecution, ExperienceJob, HarnessRepairRequest, RecoveryStage,
         RepairExecutionOutcome,
@@ -49,6 +50,7 @@ struct SummaryJob {
 
 #[derive(Clone, Serialize)]
 struct SummaryFault {
+    origin: ProblemOrigin,
     incident_id: String,
     incident_revision: u64,
     target_id: String,
@@ -56,6 +58,8 @@ struct SummaryFault {
     occurrences: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    report: Option<ErrorLogEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     evidence_refs: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +235,9 @@ pub(super) fn build_summary_prompt(
             &request.target.required_facts,
         )?,
     ];
+    if let Some(report) = &job.task.problem.report {
+        omissions.push(omission("fault.report", 1, report)?);
+    }
     if let Some(verification) = &job.task.verification {
         omissions.push(omission(
             "verification.evidence_refs",
@@ -285,12 +292,14 @@ pub(super) fn build_summary_prompt(
             stage: job.task.stage.clone(),
         },
         fault: SummaryFault {
+            origin: job.task.problem.origin,
             incident_id: job.task.problem.incident_id.clone(),
             incident_revision: job.task.problem.incident_revision,
             target_id: job.task.problem.target_id.clone(),
             fingerprint: job.task.problem.fingerprint.clone(),
             occurrences: job.task.problem.occurrences,
             summary: None,
+            report: None,
             evidence_refs: None,
             conditions: None,
             keywords: None,
@@ -382,6 +391,17 @@ pub(super) fn build_summary_prompt(
         "fault.summary",
         |candidate| candidate.fault.summary = Some(job.task.problem.summary.clone()),
     )?;
+    if let Some(report) = &job.task.problem.report {
+        include_optional(
+            &mut context,
+            prefix,
+            max_bytes,
+            "fault.report",
+            |candidate| {
+                candidate.fault.report = Some(report.clone());
+            },
+        )?;
+    }
     for (index, action) in receipt.execution_trace.iter().enumerate() {
         include_optional(
             &mut context,

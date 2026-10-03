@@ -9,7 +9,7 @@ use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ObservationBatch {
+pub struct ErrorLogBatch {
     pub schema_version: u32,
     pub target_id: String,
     pub source_id: String,
@@ -19,8 +19,8 @@ pub struct ObservationBatch {
     pub next_cursor: String,
     pub coverage: BatchCoverage,
     pub has_more: bool,
-    pub error: Option<String>,
-    pub samples: Vec<ObservationSample>,
+    pub source_error: Option<String>,
+    pub errors: Vec<NodeErrorLog>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -32,14 +32,19 @@ pub enum BatchCoverage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ObservationSample {
+pub struct NodeErrorLog {
     pub id: String,
     pub sequence: u64,
     /// Age measured by the source when it assembles the reply, not a wall clock timestamp.
     pub age_ms: u64,
-    pub value: Value,
+    pub fingerprint: String,
+    pub message: String,
     pub evidence: Value,
 }
+
+/// Compatibility names for the scheduling port; serialized data uses schema v2.
+pub type ObservationBatch = ErrorLogBatch;
+pub type ObservationSample = NodeErrorLog;
 
 #[derive(Clone, Debug)]
 pub struct ObservationRequest {

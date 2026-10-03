@@ -1,10 +1,9 @@
 //! Trusted monitor reads, incident acknowledgement and shutdown that waits for active calls.
+use super::config::binding;
 use super::shared::{Shared, lock};
+use super::state::receipt_log;
 use super::support::now_ms;
-use super::{
-    Coverage, Freshness, MonitorDefinition, MonitorError, MonitorSnapshot, MonitoringSnapshot,
-    TargetHealth,
-};
+use super::{MonitorDefinition, MonitorError, MonitorSnapshot, MonitoringSnapshot};
 use crate::persistence::incidents::{
     IncidentError, IncidentKind, IncidentRecord, IncidentStatus, SignalCondition,
 };
@@ -17,7 +16,7 @@ pub struct MonitorHandle {
 }
 
 /// An owned gate prevents observation and acknowledgement commits from crossing
-/// the authorization-to-send interval; freshness must still be rechecked.
+/// the authorization-to-send interval; the live instance is still rechecked.
 pub struct MonitorIncidentLease {
     handle: MonitorHandle,
     incident_id: String,
@@ -75,6 +74,11 @@ impl MonitorHandle {
     pub fn definition(&self, id: &str) -> Result<Option<MonitorDefinition>, MonitorError> {
         Ok(lock(&self.shared.definitions)?.get(id).cloned())
     }
+    /// Wakeups follow durable receipt commits. Scan durable receipts before waiting;
+    /// notifications are coalesced and never replace the authoritative journal.
+    pub fn error_notifications(&self) -> Arc<tokio::sync::Notify> {
+        self.shared.received.clone()
+    }
     pub fn incidents(&self) -> Result<Vec<IncidentRecord>, MonitorError> {
         Ok(lock(&self.shared.store)?.list())
     }
@@ -87,11 +91,9 @@ impl MonitorHandle {
     pub fn incident(&self, id: &str) -> Result<Option<IncidentRecord>, MonitorError> {
         Ok(lock(&self.shared.store)?.get(id))
     }
-    /// Read one authoritative episode together with its current observation
-    /// readiness. This neither grants action authority nor freezes future health.
-    /// Resolved episodes are returned so a caller can cancel obsolete work.
-    /// Active episodes require complete fresh evidence and a running source.
-    /// Revision advances from acknowledgement or new observations are allowed.
+    /// Validate a durable Node error receipt and its trusted source binding.
+    /// Receipt presence does not establish current target health or grant authority.
+    /// Human acknowledgement may advance the record revision without erasing it.
     pub fn repair_incident(
         &self,
         incident_id: &str,
@@ -103,7 +105,7 @@ impl MonitorHandle {
     /// Runs a trusted bounded synchronous authorization commit while retaining
     /// the registration gate from the authoritative read through the callback.
     /// Observation commits and ordinary shutdown cannot cross that interval.
-    /// All incident, definition, view, deadline and error locks are released
+    /// All incident, definition, view and error locks are released
     /// before calling `callback`; only the registration gate remains held.
     /// The callback must not reenter monitor APIs or run external actions. Its
     /// scope is limited to the host's synchronous durable authorization commit;
@@ -133,14 +135,11 @@ impl MonitorHandle {
         if minimum_revision == 0
             || record.revision < minimum_revision
             || record.target_id != target_id
-            || record.kind != IncidentKind::Target
+            || record.kind != IncidentKind::ErrorLog
         {
             return Err(MonitorError::Observation(
                 "repair incident identity or revision mismatch".into(),
             ));
-        }
-        if record.status == IncidentStatus::Resolved {
-            return Ok(record);
         }
         if !self.shared.accepting.load(Ordering::Acquire) || self.shared.cancellation.is_cancelled()
         {
@@ -153,14 +152,22 @@ impl MonitorHandle {
             )
         {
             return Err(MonitorError::Observation(
-                "repair incident lacks current active evidence".into(),
+                "repair incident is not a durable received error".into(),
             ));
         }
         let definitions = lock(&self.shared.definitions)?;
         let definition = definitions.get(&record.monitor_id).ok_or_else(|| {
             MonitorError::Observation("repair monitor definition is missing".into())
         })?;
-        if definition.target_id != target_id || record.rule_id != definition.id {
+        receipt_log(definition, &record)?;
+        let expected_binding = binding(definition)?;
+        if definition.target_id != target_id
+            || store
+                .checkpoint(&record.monitor_id)
+                .is_none_or(|checkpoint| {
+                    checkpoint.value["binding"].as_str() != Some(expected_binding.as_str())
+                })
+        {
             return Err(MonitorError::Observation(
                 "repair monitor identity mismatch".into(),
             ));
@@ -169,19 +176,13 @@ impl MonitorHandle {
         let view = views
             .get(&record.monitor_id)
             .ok_or_else(|| MonitorError::Observation("repair monitor view is missing".into()))?;
-        let deadlines = lock(&self.shared.fresh_until)?;
         if !view.running
             || view.target_id != target_id
             || view.source_id != definition.source_id
-            || view.health != TargetHealth::Unhealthy
-            || view.freshness != Freshness::Fresh
-            || view.coverage != Coverage::Complete
-            || deadlines
-                .get(&record.monitor_id)
-                .is_none_or(|deadline| tokio::time::Instant::now() >= *deadline)
+            || view.extension_id != definition.extension_id
         {
             return Err(MonitorError::Observation(
-                "repair monitor is not running with fresh complete unhealthy evidence".into(),
+                "repair receipt source instance is not running".into(),
             ));
         }
         // Runtime failure can race independently of the registration gate.
@@ -239,7 +240,6 @@ impl MonitorHandle {
         self.request_stop();
         for view in lock(&self.shared.views)?.values_mut() {
             view.running = false;
-            view.health = TargetHealth::Unknown;
         }
         for view in lock(&self.shared.discoveries)?.values_mut() {
             view.running = false;

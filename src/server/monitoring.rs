@@ -49,7 +49,7 @@ struct PluginMonitoringField {
 #[serde(rename_all = "snake_case")]
 enum PluginMonitoringSource {
     Monitor,
-    LastValue,
+    LastErrorLog,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -322,6 +322,9 @@ fn plugin_summaries(state: &Console, snapshot: Option<&MonitoringSnapshot>) -> V
 fn monitor_value(state: &Console, monitor: &MonitorSnapshot) -> Result<Value, ApiError> {
     let (logs_available, log_source_id) = project_logs::availability(state, &monitor.id)?;
     let mut value = serde_json::to_value(monitor)?;
+    if state.require("logs.read").is_err() {
+        value.as_object_mut().unwrap().remove("last_error_log");
+    }
     value["owner_plugin_id"] = json!(monitor_owner(state, monitor));
     value["logs_available"] = json!(logs_available);
     value["log_source_id"] = json!(log_source_id);
@@ -348,7 +351,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
     }
     let Some(handle) = state.application.monitoring() else {
         return Ok(
-            json!({"configured":false,"monitors":[],"discoveries":[],"plugins":plugin_summaries(state,None),"runtime_error":null,"counts":{"monitors":0,"targets":0,"unhealthy":0,"stale":0,"collection_issues":0,"incidents":if state.require("incident.read").is_ok(){incident_counts(&[])}else{Value::Null}}}),
+            json!({"configured":false,"monitors":[],"discoveries":[],"plugins":plugin_summaries(state,None),"runtime_error":null,"counts":{"monitors":0,"targets":0,"received_errors":0,"stale":0,"collection_issues":0,"incidents":if state.require("incident.read").is_ok(){incident_counts(&[])}else{Value::Null}}}),
         );
     };
     let snapshot = handle.snapshot().map_err(monitor_error)?;
@@ -358,7 +361,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
         .map(|monitor| {
             let mut value = monitor_value(state, monitor)?;
             if let Some(value) = value.as_object_mut() {
-                value.remove("last_value");
+                value.remove("last_error_log");
                 value.insert("detail".into(), Value::Bool(false));
             }
             Ok(value)
@@ -371,7 +374,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
         .collect::<Result<Vec<_>, ApiError>>()?;
     let counts = json!({"monitors":monitors.len(),
         "targets":snapshot.monitors.iter().map(|monitor|&monitor.target_id).collect::<std::collections::BTreeSet<_>>().len(),
-        "unhealthy":monitors.iter().filter(|monitor|monitor["health"]=="unhealthy").count(),
+        "received_errors":snapshot.monitors.iter().map(|monitor|monitor.received_error_count).sum::<u64>(),
         "stale":monitors.iter().filter(|monitor|monitor["freshness"]=="stale").count(),
         "collection_issues":monitors.iter().filter(|monitor|monitor["coverage"]!="complete"||monitor["freshness"]!="fresh").count(),
         "incidents":if state.require("incident.read").is_ok(){incident_counts(&handle.map_incidents(summary).map_err(monitor_error)?)}else{Value::Null},
@@ -665,7 +668,7 @@ pub(super) async fn incidents(
         || query
             .kind
             .as_deref()
-            .is_some_and(|kind| !matches!(kind, "" | "all" | "target" | "coverage"))
+            .is_some_and(|kind| !matches!(kind, "" | "all" | "target" | "coverage" | "error_log"))
         || query.query.as_ref().is_some_and(|text| text.len() > 256)
         || !matches!(
             status,

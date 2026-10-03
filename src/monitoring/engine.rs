@@ -66,7 +66,7 @@ impl MonitorEngine {
             store: Mutex::new(store),
             definitions: Mutex::new(definitions),
             views: Mutex::new(views),
-            fresh_until: Mutex::new(BTreeMap::new()),
+            received: Arc::new(tokio::sync::Notify::new()),
             discoveries: Mutex::new(discovery_views),
             registration: Arc::new(tokio::sync::Mutex::new(())),
             error: Mutex::new(None),

@@ -1,4 +1,4 @@
-# 节点业务接口 v1
+# 节点业务接口
 
 本文件补充[扩展协议 v1](protocol.md)的业务载荷。下列对象放入 `call.params` 和 `result.result`，不另建消息类型。节点按 JSON 字段独立实现，不需要 Rust 或 Host/Core 依赖。方法须在 Ready 中声明输入/输出 schema，并由可信 Host 配置加入白名单；仅声明方法不会授予权限。
 
@@ -87,11 +87,15 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
 
 插件声明自己拥有的命名空间及版本化方法，Host 配置决定调用哪个方法和参数。普通插件路由仅开放获准只读方法，不能占用 `recuvora` 保留命名空间。业务 schema 应明确字段、类型和限额，并与实际返回值一致。
 
-配置为监控来源的方法返回如下 ObservationBatch；其方法名和业务 value 字段由插件契约决定：
+### 错误日志批次 v2
+
+配置为错误来源的方法必须由 `kind: node` 实现，为获准只读方法。自定义契约仍由可信插件登记，Node 声明完全匹配的契约；插件不直接提供错误事实。新业务载荷使用 schema 2，方法的契约版本须与旧观察接口分开；共同消息协议仍为 v1。固定[错误日志样例](examples/error-logs.json)可供独立节点实现校验。
+
+Host 按配置轮询并传入 `target_id`、`source_id`、`generation` 和 `cursor`；首次 generation/cursor 为 null。Node 只返回自己已识别的错误日志，不返回等待 Host 计算健康的任意 value，也不混入普通运行日志。批次如下：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "target_id": "target-1",
   "source_id": "source-1",
   "generation": "generation-1",
@@ -99,12 +103,16 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
   "next_cursor": "cursor-1",
   "coverage": "complete",
   "has_more": false,
-  "error": null,
-  "samples": [{"id":"sample-1","sequence":1,"age_ms":0,"value":{"healthy":true},"evidence":{"record_id":"record-1"}}]
+  "source_error": null,
+  "errors": [{"id":"error-1","sequence":1,"age_ms":0,"fingerprint":"workload-condition-v1","message":"Original error log text","evidence":{"record_id":"record-1"}}]
 }
 ```
 
-cursor 回显请求游标，初次为 null；generation 表示来源代次，sequence 在代次内单调递增。coverage 只接受 `complete/partial`；空完整批次不代表目标健康，部分覆盖、失联与过期均不能推出恢复。Host 按配置规则读取 value，并独立验证身份、顺序、时效与覆盖。详细配置见[监控说明](../monitoring.md)和[监控模块](../../src/monitoring/README.md)。
+每批最多 32 条，完整编码不超过 256 KiB。id、generation 和 fingerprint 使用协议 ID 字符规则；sequence 为代次内递增正整数；sequence 与 age_ms 均不得超过 2^53。message 为非空、无 NUL、最多 8192 UTF-8 字节的原始错误文本，超限拒绝而不截断；evidence 为最多 4096 编码字节、深度不超过 24 的对象。age_ms 为 Node 组装响应时记录的相对年龄，只是来源证据，不是执行授权。未知字段拒绝。
+
+cursor 必须准确回显请求，next_cursor 为非空且最多 4096 UTF-8 字节的后续读取位置；Node 不得因为连接结束删除尚未可靠交付的错误。generation 表示来源代次。同一来源、代次和错误 ID 的 sequence、fingerprint、message、evidence 不可变；相同日志的重新读取可更新 age_ms，但不能制造新记录。Host 对收件和读取位置同次持久确认，重复数据不重复提交业务任务，同身份内容冲突整批拒绝。每个接收实例最多保留 16 个退休代次，超限明确拒绝新代次，不能遗忘旧代次后接受重放。
+
+coverage 只接受 `complete/partial`，它只描述错误流采集覆盖。source_error 表示来源采集问题，不是业务错误日志。空完整批次、部分覆盖、失联和来源过期均不证明健康或解除旧错误。Host 不根据 level、event、消息文本或连续阈值二次筛选错误；每条有效日志独立进入持久收件，恢复已启用时立即唤醒递交 Core。Core 收到的是 ErrorLog 问题报告，包括原始文本与证据，继续通过观察、审批和验收决定后续流程。详见[错误日志接收](../monitoring.md)。
 
 获准插件可发送 `method: "service.call"` 的 callback，params 为 `node_id`、`contract`、`version`、`method`、`params`。Host 只访问插件 `allow_nodes` 中的节点及明确获准的只读方法；回复使用相同 callback ID。该入口不能调用修复执行方法，也不能隐式授权其他业务。
 

@@ -6,7 +6,10 @@ use recuvora_host::integrations::extensions::{
     ExtensionRegistry, ExtensionsConfig, Message, MethodDeclaration, NetworkEndpoint,
 };
 use recuvora_host::integrations::monitoring::RegistryObservationSource;
-use recuvora_host::monitoring::{MonitorEngine, MonitorsConfig};
+use recuvora_host::monitoring::{
+    MonitorEngine, MonitorsConfig, ObservationRequest, ObservationSource,
+};
+use recuvora_host::runtime::operation::Cancellation;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -35,7 +38,7 @@ fn fixture(mut session: network_peer::Session) -> Result {
             kind,
             contracts: vec![ContractDeclaration {
                 id: "example.monitor".into(),
-                version: 1,
+                version: 2,
                 methods: vec![MethodDeclaration {
                     name: "observe".into(),
                     read_only: true,
@@ -50,22 +53,10 @@ fn fixture(mut session: network_peer::Session) -> Result {
     let Some(Message::Call { id, params, .. }) = session.read()? else {
         return Ok(());
     };
-    if kind == ExtensionKind::Plugin {
-        session.write(
-            Message::Callback {
-                id: "read-node".into(),
-                parent_id: id.clone(),
-                method: "service.call".into(),
-                params: json!({"node_id":"probe-node","contract":"example.monitor","version":1,"method":"observe","params":params}),
-            },
-        )?;
-        match session.read()? {
-            Some(Message::Result { result, .. }) => {
-                session.write(Message::Result { id, result })?
-            }
-            _ => return Ok(()), // Lost node result must propagate as Unknown, never empty healthy data.
-        }
-    } else {
+    if kind != ExtensionKind::Node {
+        return Err("plugin must not be invoked as error source".into());
+    }
+    {
         let sequence = params["cursor"]
             .as_str()
             .and_then(|s| s.parse::<u64>().ok())
@@ -78,9 +69,9 @@ fn fixture(mut session: network_peer::Session) -> Result {
             Message::Result {
                 id,
                 result: json!({
-                    "schema_version":1,"target_id":"service","source_id":"probe","generation":"g1",
-                    "cursor":params["cursor"],"next_cursor":sequence.to_string(),"coverage":"complete","has_more":false,"error":null,
-                    "samples":[{"id":format!("sample-{sequence}"),"sequence":sequence,"age_ms":0,"value":{"ready":sequence>=3},"evidence":{"source":"wire-fixture"}}]
+                    "schema_version":2,"target_id":"service","source_id":"probe","generation":"g1",
+                    "cursor":params["cursor"],"next_cursor":sequence.to_string(),"coverage":"complete","has_more":false,"source_error":null,
+                    "errors":[{"id":format!("error-{sequence}"),"sequence":sequence,"age_ms":0,"fingerprint":"node-error","message":"node reported error","evidence":{"source":"wire-fixture"}}]
                 }),
             },
         )?;
@@ -137,7 +128,7 @@ fn definition(
         },
         allow_calls: vec![AllowedMethod {
             contract: "example.monitor".into(),
-            version: 1,
+            version: 2,
             method: "observe".into(),
         }],
         allow_nodes: if kind == ExtensionKind::Plugin {
@@ -161,25 +152,43 @@ async fn run() -> Result {
         })
         .await?,
     );
-    let config: MonitorsConfig = serde_json::from_value(json!({"schema_version":1,"monitors":[{
-        "id":"ready","target_id":"service","source_id":"probe","extension_id":"probe-plugin",
-        "contract":"example.monitor","version":1,"method":"observe","params":{},"interval_ms":200,"timeout_ms":5000,
-        "stale_after_ms":20000,"startup_grace_ms":20000,
-        "rule":{"pointer":"/ready","operator":"eq","value":true,"failure_samples":2,"success_samples":2}
+    let config: MonitorsConfig = serde_json::from_value(json!({"schema_version":2,"monitors":[{
+        "id":"ready","target_id":"service","source_id":"probe","extension_id":"probe-node",
+        "contract":"example.monitor","version":2,"method":"observe","params":{},"interval_ms":200,"timeout_ms":5000,
+        "stale_after_ms":20000,"startup_grace_ms":20000
     }]}))?;
     let source = Arc::new(RegistryObservationSource::new(registry.clone()));
+    let plugin_result = source
+        .poll(
+            ObservationRequest {
+                extension_id: "probe-plugin".into(),
+                contract: "example.monitor".into(),
+                version: 2,
+                method: "observe".into(),
+                params: json!({}),
+                timeout: Duration::from_secs(1),
+            },
+            Cancellation::new(),
+        )
+        .await;
+    assert!(
+        plugin_result.is_err(),
+        "a plugin cannot impersonate the Node error source"
+    );
     let mut engine = MonitorEngine::start_with_source(config, source, dir.path.join("runtime"))?;
     let handle = engine.handle();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let records = handle.incidents()?;
-            let recovered = records
+            let received = records
                 .iter()
-                .any(|r| r.kind == IncidentKind::Target && r.status == IncidentStatus::Resolved);
+                .filter(|r| r.kind == IncidentKind::ErrorLog)
+                .count()
+                == 4;
             let lost = records
                 .iter()
                 .any(|r| r.kind == IncidentKind::Coverage && r.status == IncidentStatus::Open);
-            if recovered && lost {
+            if received && lost {
                 return Result::Ok(());
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -187,12 +196,21 @@ async fn run() -> Result {
     })
     .await??;
     let records = handle.incidents()?;
-    let target = records
+    let received: Vec<_> = records
         .iter()
-        .find(|r| r.kind == IncidentKind::Target)
-        .ok_or("missing target incident")?;
-    assert_eq!(target.evidence["sample_id"], "sample-4");
-    assert!(target.resolved_at.is_some());
+        .filter(|r| r.kind == IncidentKind::ErrorLog)
+        .collect();
+    assert_eq!(received.len(), 4);
+    assert!(
+        received
+            .iter()
+            .all(|record| record.status == IncidentStatus::Open && record.resolved_at.is_none())
+    );
+    assert!(
+        received
+            .iter()
+            .any(|record| record.evidence["log"]["id"] == "error-4")
+    );
     assert!(
         handle
             .monitor("ready")?
@@ -204,7 +222,7 @@ async fn run() -> Result {
     registry.shutdown().await?;
     server.shutdown()?;
     println!(
-        "monitor_wire: real plugin/node calls, durable target fault and evidence resolution, disconnect coverage passed"
+        "monitor_wire: Node errors durably received, Plugin source rejected, disconnect coverage passed"
     );
     Ok(())
 }

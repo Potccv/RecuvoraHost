@@ -163,6 +163,8 @@ async fn recovery_http_uses_core_records_revisions_and_authenticated_actor() {
         .unwrap();
     let mut task = recovery
         .submit(ProblemContext {
+            origin: Default::default(),
+            report: None,
             incident_id: "incident-fixture".into(),
             incident_revision: 1,
             target_id: "target".into(),

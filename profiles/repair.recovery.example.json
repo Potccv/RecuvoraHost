@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "data_dir": "runtime/recovery",
   "ownership_dir": "runtime/target-ownership",
   "approval_store": {
@@ -48,19 +48,6 @@
     "max_tasks": 1024,
     "summary_timeout_secs": 120
   },
-  "triggers": [
-    {
-      "monitor_id": "target-monitor",
-      "rule_id": "target-monitor",
-      "fingerprint": "workload-condition-v1",
-      "keywords": [
-        "workload"
-      ],
-      "conditions": {
-        "workload_version": "1"
-      }
-    }
-  ],
   "interval_ms": 1000,
   "executor": {
     "platform": "windows",

@@ -1,20 +1,19 @@
-//! HTTP reads through an isolated loopback WebSocket provider. No real target.
+//! HTTP reads of durable Node error receipts through isolated loopback peers.
 mod network_peer;
 use network_peer::{PeerServer, Session};
-use recuvora_host::protocol::{
-    ContractDeclaration, ExtensionMetadata, Message, MethodDeclaration, Outcome,
-};
+use recuvora_host::protocol::{ContractDeclaration, ExtensionMetadata, Message, MethodDeclaration};
 use recuvora_host::server::{Console, ServerConfig, router};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     error::Error,
-    io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
+static NODE_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> TestResult {
     tokio::runtime::Builder::new_multi_thread()
@@ -34,11 +33,10 @@ fn provider_server(role: &str, root: &Path) -> TestResult<PeerServer> {
         ]),
     )
 }
-
 fn fixture_contract(id: &str, methods: &[&str]) -> ContractDeclaration {
     ContractDeclaration {
         id: id.into(),
-        version: 1,
+        version: 2,
         methods: methods
             .iter()
             .map(|name| MethodDeclaration {
@@ -50,7 +48,12 @@ fn fixture_contract(id: &str, methods: &[&str]) -> ContractDeclaration {
             .collect(),
     }
 }
-
+fn fixture_message(index: usize) -> String {
+    format!(
+        "Node error {index:02} <script>read as data</script> {}",
+        "x".repeat(7000)
+    )
+}
 fn provider(mut session: Session) -> TestResult {
     let Some(Message::Hello {
         expected_id, kind, ..
@@ -58,53 +61,25 @@ fn provider(mut session: Session) -> TestResult {
     else {
         return Err("hello required".into());
     };
-    let role = session.env("ROLE").unwrap_or("logs").to_owned();
-    let (contracts, capabilities) = match role.as_str() {
-        "logs" => (
-            vec![
-                fixture_contract("example.observation", &["observe", "query"]),
-                ContractDeclaration {
-                    id: "example.observation.monitoring_view".into(),
-                    version: 1,
-                    methods: vec![MethodDeclaration {
-                        name: "describe_monitoring_view".into(),
-                        read_only: true,
-                        input_schema: json!({"type":"object","properties":{"schema_version":{"type":"integer","minimum":1,"maximum":1}},"required":["schema_version"],"additionalProperties":false}),
-                        output_schema: json!({"type":"object"}),
-                    }],
-                },
-            ],
-            vec!["recuvora.monitoring_view.v1".into()],
-        ),
-        "owner" => (
-            vec![
-                fixture_contract("example.observation", &["observe", "inventory"]),
-                ContractDeclaration {
-                    id: "example.observation.monitoring_view".into(),
-                    version: 1,
-                    methods: vec![MethodDeclaration {
-                        name: "describe_monitoring_view".into(),
-                        read_only: true,
-                        input_schema: json!({"type":"object","properties":{"schema_version":{"type":"integer","minimum":1,"maximum":1}},"required":["schema_version"],"additionalProperties":false}),
-                        output_schema: json!({"type":"object"}),
-                    }],
-                },
-            ],
-            vec!["recuvora.monitoring_view.v1".into()],
-        ),
-        "node" => (
-            vec![fixture_contract(
-                "example.observation",
-                &["observe", "inventory"],
-            )],
-            vec![],
-        ),
-        "other" => (
-            vec![fixture_contract("example.other", &["observe", "inventory"])],
-            vec![],
-        ),
-        _ => return Err("unknown fixture role".into()),
+    let role = session.env("ROLE").unwrap_or("node").to_owned();
+    let contract = if role == "other" {
+        "example.other"
+    } else {
+        "example.observation"
     };
+    let mut contracts = vec![fixture_contract(contract, &["observe", "inventory"])];
+    let mut capabilities = vec![];
+    if role == "owner" {
+        contracts.push(ContractDeclaration {
+            id:"example.observation.monitoring_view".into(), version:1,
+            methods:vec![MethodDeclaration {
+                name:"describe_monitoring_view".into(), read_only:true,
+                input_schema:json!({"type":"object","properties":{"schema_version":{"type":"integer","minimum":1,"maximum":1}},"required":["schema_version"],"additionalProperties":false}),
+                output_schema:json!({"type":"object"}),
+            }],
+        });
+        capabilities.push("recuvora.monitoring_view.v1".into());
+    }
     session.write(Message::Ready {
         metadata: ExtensionMetadata {
             protocol_version: 1,
@@ -122,101 +97,35 @@ fn provider(mut session: Session) -> TestResult {
         else {
             continue;
         };
-        if method == "observe" {
-            session.write(
-                Message::Result {
-                    id,
-                    result: json!({"schema_version":1,"target_id":params["target_id"],"source_id":params["source_id"],
-                "generation":"fixture-g1","cursor":params["cursor"],"next_cursor":"observe-1","has_more":false,"coverage":"complete","error":null,
-                "samples":[{"id":"fixture-sample-1","sequence":1,"age_ms":0,"value":{"ready":true},"evidence":{}}]}),
-                },
-            )?;
-            continue;
-        }
-        if method == "inventory" {
-            let key = if role == "other" { "other" } else { "owned" };
-            session.write(
-                Message::Result {
-                    id,
-                    result: json!({"schema_version":1,"complete":true,"targets":[{"key":key}],"error":null}),
-                },
-            )?;
-            continue;
-        }
-        if method == "describe_monitoring_view" {
-            if params != json!({"schema_version":1}) {
-                return Err("fixed monitoring view input required".into());
-            }
-            session.write(Message::Result {
-                id,
-                result: json!({
-                    "schema_version":1,
-                    "title":"Observation provider <script>",
-                    "summary":"Read-only fields from host-owned monitor snapshots.",
-                    "sections":[{
-                        "id":"status","title":"Provider status","monitor_role":"status",
-                        "fields":[{
-                            "id":"ready","label":"Ready <img>","source":"last_value",
-                            "pointer":"/ready","format":"boolean","empty":"Not observed"
-                        }]
-                    }]
-                }),
-            })?;
-            continue;
-        }
-        let target_key = params["target_key"].as_str().ok_or("target key required")?;
-        if !matches!(target_key, "a" | "b") || params.get("file").is_some() {
-            return Err("fixture target scope denied".into());
-        }
-        let provider_root = PathBuf::from(session.env("ROOT").ok_or("fixture root required")?);
-        let fail_once = provider_root.join("fail-next-query");
-        if std::fs::read_to_string(&fail_once).ok().as_deref() == Some("offline") {
-            std::fs::write(&fail_once, "")?;
-            session.write(Message::Error {
-                id,
-                code: "source_offline".into(),
-                message: "isolated provider temporarily unavailable".into(),
-                outcome: Outcome::Rejected,
-            })?;
-            continue;
-        }
-        let file = provider_root.join(format!("{target_key}.jsonl"));
-        let entries = std::fs::read_to_string(&file)?
-            .lines()
-            .map(serde_json::from_str::<Value>)
-            .collect::<Result<Vec<_>, _>>()?;
-        let start = match params["cursor"].as_str() {
-            None => entries.len().saturating_sub(32),
-            Some(cursor) => {
-                let Some((scope, position)) = cursor.split_once(':') else {
-                    return Err("invalid fixture cursor".into());
+        match method.as_str() {
+            "observe" => {
+                assert_ne!(role, "owner", "contract owner must not collect error facts");
+                NODE_CALLS.fetch_add(1, Ordering::SeqCst);
+                let errors = if params["target_key"] == "a" && params["cursor"].is_null() {
+                    (1..=32).map(|index| json!({"id":format!("a-{index:02}"),"sequence":index,"age_ms":0,
+                        "fingerprint":"target.failure","message":fixture_message(index),"evidence":{"node":"fixture"}})).collect::<Vec<_>>()
+                } else {
+                    vec![]
                 };
-                let position = position.parse::<usize>()?;
-                if scope != target_key || position > entries.len() {
-                    session.write(Message::Error {
-                        id,
-                        code: "source_changed".into(),
-                        message: "fixed fixture record stream was truncated".into(),
-                        outcome: Outcome::Rejected,
-                    })?;
-                    continue;
-                }
-                position
+                session.write(Message::Result {id,result:json!({"schema_version":2,"target_id":params["target_id"],"source_id":params["source_id"],
+                    "generation":"fixture-g1","cursor":params["cursor"],"next_cursor":"received-32","has_more":false,"coverage":"complete","source_error":null,"errors":errors})})?;
             }
-        };
-        let limit = params["limit"].as_u64().ok_or("bounded limit required")? as usize;
-        if !(1..=32).contains(&limit) {
-            return Err("limit invalid".into());
+            "inventory" => {
+                let key = if role == "other" { "other" } else { "owned" };
+                session.write(Message::Result {id,result:json!({"schema_version":1,"complete":true,"targets":[{"key":key}],"error":null})})?;
+            }
+            "describe_monitoring_view" => {
+                assert_eq!(params, json!({"schema_version":1}));
+                session.write(Message::Result {id,result:json!({"schema_version":1,"title":"Observation provider <script>",
+                    "summary":"Read-only fields from host-owned receiver snapshots.","sections":[{"id":"status","title":"Node errors","monitor_role":"status",
+                    "fields":[{"id":"message","label":"Message <img>","source":"last_error_log","pointer":"/message","format":"text","empty":"No error received"}]}]})})?;
+            }
+            _ => {
+                return Err(
+                    "unexpected fixture method; HTTP receipt reads must not call a Node".into(),
+                );
+            }
         }
-        let end = (start + limit).min(entries.len());
-        session.write(
-            Message::Result {
-                id,
-                result: json!({"entries":entries[start..end],"next_cursor":format!("{target_key}:{end}"),
-            "has_more":end<entries.len(),"stream_label":format!("stream-{target_key}"),"available_streams":[],
-            "coverage":"complete","error":null}),
-            },
-        )?;
     }
     Ok(())
 }
@@ -240,17 +149,8 @@ async fn call(address: std::net::SocketAddr, path: &str, auth: &str) -> TestResu
             .nth(1)
             .ok_or("status required")?
             .parse()?,
-        serde_json::from_str(body)?,
+        serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.into())),
     ))
-}
-fn append(path: &Path, record: Value) -> TestResult {
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    serde_json::to_writer(&mut file, &record)?;
-    file.write_all(b"\n")?;
-    Ok(())
 }
 
 async fn owner_provider_http(directory: &Path, token: &Path) -> TestResult {
@@ -266,16 +166,24 @@ async fn owner_provider_http(directory: &Path, token: &Path) -> TestResult {
             {
                 "id":"observation-node","kind":"node","enabled":true,"namespaces":[],"allow_nodes":[],
                 "allow_calls":[
-                    {"contract":"example.observation","version":1,"method":"observe"},
-                    {"contract":"example.observation","version":1,"method":"inventory"}
+                    {"contract":"example.observation","version":2,"method":"observe"},
+                    {"contract":"example.observation","version":2,"method":"inventory"}
                 ],
                 "endpoint":node_peer.endpoint()
             },
             {
+                "id":"other-node","kind":"node","enabled":true,"namespaces":[],"allow_nodes":[],
+                "allow_calls":[
+                    {"contract":"example.other","version":2,"method":"observe"},
+                    {"contract":"example.other","version":2,"method":"inventory"}
+                ],
+                "endpoint":other_peer.endpoint()
+            },
+            {
                 "id":"other-provider","kind":"plugin","enabled":true,"namespaces":["example.other"],"allow_nodes":[],
                 "allow_calls":[
-                    {"contract":"example.other","version":1,"method":"observe"},
-                    {"contract":"example.other","version":1,"method":"inventory"}
+                    {"contract":"example.other","version":2,"method":"observe"},
+                    {"contract":"example.other","version":2,"method":"inventory"}
                 ],
                 "endpoint":other_peer.endpoint()
             },
@@ -295,9 +203,8 @@ async fn owner_provider_http(directory: &Path, token: &Path) -> TestResult {
                    contract: &str| {
         json!({
             "id":id,"target_id":target_id,"source_id":source_id,"view_role":"status",
-            "extension_id":extension_id,"contract":contract,"version":1,"method":"observe","params":{},
-            "interval_ms":3_600_000,"timeout_ms":5000,"stale_after_ms":60_000,"startup_grace_ms":60_000,
-            "rule":{"pointer":"/ready","operator":"eq","value":true,"failure_samples":1,"success_samples":1}
+            "extension_id":extension_id,"contract":contract,"version":2,"method":"observe","params":{},
+            "interval_ms":3_600_000,"timeout_ms":5000,"stale_after_ms":60_000,"startup_grace_ms":60_000
         })
     };
     let discovery = |id: &str,
@@ -307,7 +214,7 @@ async fn owner_provider_http(directory: &Path, token: &Path) -> TestResult {
                      target_id: &str,
                      source_id: &str| {
         json!({
-            "id":id,"extension_id":extension_id,"contract":contract,"version":1,"method":"inventory","params":{},
+            "id":id,"extension_id":extension_id,"contract":contract,"version":2,"method":"inventory","params":{},
             "interval_ms":3_600_000,"timeout_ms":5000,"max_targets":1,"parameter":"target_key",
             "template":monitor(template_id,target_id,source_id,extension_id,contract)
         })
@@ -316,22 +223,21 @@ async fn owner_provider_http(directory: &Path, token: &Path) -> TestResult {
     std::fs::write(
         &monitors,
         serde_json::to_vec(&json!({
-            "schema_version":1,
+            "schema_version":2,
             "monitors":[
                 monitor("owner-static","owner-static-target","owner-static-source","observation-node","example.observation"),
-                monitor("other-static","other-static-target","other-static-source","other-provider","example.other")
+                monitor("other-static","other-static-target","other-static-source","other-node","example.other")
             ],
             "discoveries":[
                 discovery("owner-inventory","observation-node","example.observation","owner-dynamic","owner-target","owner-source"),
-                discovery("other-inventory","other-provider","example.other","other-dynamic","other-target","other-source")
+                discovery("other-inventory","other-node","example.other","other-dynamic","other-target","other-source")
             ]
         }))?,
     )?;
     let config: ServerConfig = serde_json::from_value(json!({
         "schema_version":1,"listen":"127.0.0.1:0","token_file":token,"operator":"fixture-operator",
         "permissions":["monitor.read","extension.read"],"allowed_origins":[],"data_dir":phase,
-        "harness_config":null,"extensions_config":extensions,"repair_config":null,"monitors_config":monitors,
-        "log_sources":[]
+        "harness_config":null,"extensions_config":extensions,"repair_config":null,"monitors_config":monitors
     }))?;
     let (state, engine) = Console::open(config).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -477,145 +383,154 @@ async fn run() -> TestResult {
     std::fs::create_dir(&directory)?;
     let token = directory.join("token");
     std::fs::write(&token, "isolated-log-test-token-0123456789abcdef")?;
-    let file = directory.join("a.jsonl");
-    append(
-        &file,
-        json!({"id":"a-1","timestamp":1,"level":"INFO","message":"normal observation record"}),
-    )?;
-    append(
-        &file,
-        json!({"id":"a-2","timestamp":2,"level":"ERROR","message":"captured condition record","event":"condition_active"}),
-    )?;
-    append(
-        &directory.join("b.jsonl"),
-        json!({"id":"b-1","timestamp":1,"level":"INFO","message":"different target record"}),
-    )?;
+    let owner = provider_server("owner", &directory)?;
+    let node = provider_server("node", &directory)?;
     let extensions = directory.join("extensions.json");
-    let provider = provider_server("logs", &directory)?;
-    std::fs::write(
-        &extensions,
-        serde_json::to_vec(&json!({"schema_version":1,"extensions":[{
-            "id":"observation-provider","kind":"plugin","enabled":true,"namespaces":["example.observation"],"allow_nodes":[],
-            "allow_calls":[{"contract":"example.observation","version":1,"method":"observe"},{"contract":"example.observation","version":1,"method":"query"},
-                {"contract":"example.observation.monitoring_view","version":1,"method":"describe_monitoring_view"}],
-            "endpoint":provider.endpoint()
-        }]}))?,
-    )?;
+    let write_extensions = |node: &PeerServer| -> TestResult {
+        std::fs::write(
+            &extensions,
+            serde_json::to_vec(&json!({"schema_version":1,"extensions":[
+                {"id":"observation-provider","kind":"plugin","enabled":true,"namespaces":["example.observation"],"allow_nodes":[],
+                 "allow_calls":[{"contract":"example.observation.monitoring_view","version":1,"method":"describe_monitoring_view"}],"endpoint":owner.endpoint()},
+                {"id":"observation-node","kind":"node","enabled":true,"namespaces":[],"allow_nodes":[],
+                 "allow_calls":[{"contract":"example.observation","version":2,"method":"observe"}],"endpoint":node.endpoint()}
+            ]}))?,
+        )?;
+        Ok(())
+    };
+    write_extensions(&node)?;
     let monitors = directory.join("monitors.json");
-    let definitions=["a","b"].into_iter().map(|name|json!({"id":format!("monitor-{name}"),"target_id":format!("target-{name}"),
-        "source_id":format!("source-{name}"),"extension_id":"observation-provider","contract":"example.observation","version":1,"method":"observe","view_role":"status","params":{"target_key":name},
-        "interval_ms":3_600_000,"timeout_ms":5000,"stale_after_ms":60_000,"startup_grace_ms":60_000,
-        "rule":{"pointer":"/ready","operator":"eq","value":true,"failure_samples":1,"success_samples":1}})).collect::<Vec<_>>();
+    let definitions = ["a","b"].into_iter().map(|name|json!({"id":format!("monitor-{name}"),"target_id":format!("target-{name}"),
+        "source_id":format!("source-{name}"),"extension_id":"observation-node","contract":"example.observation","version":2,"method":"observe","view_role":"status","params":{"target_key":name},
+        "interval_ms":3_600_000,"timeout_ms":5000,"stale_after_ms":60_000,"startup_grace_ms":60_000})).collect::<Vec<_>>();
     std::fs::write(
         &monitors,
-        serde_json::to_vec(&json!({"schema_version":1,"monitors":definitions}))?,
+        serde_json::to_vec(&json!({"schema_version":2,"monitors":definitions}))?,
     )?;
     let config: ServerConfig = serde_json::from_value(
         json!({"schema_version":1,"listen":"127.0.0.1:0","token_file":token,"operator":"fixture-operator",
-        "permissions":["monitor.read","logs.read","extension.read"],"allowed_origins":[],"data_dir":directory,
-        "harness_config":null,"extensions_config":extensions,"repair_config":null,"monitors_config":monitors,
-        "log_sources":[{"id":"record-source","extension_id":"observation-provider","contract":"example.observation","version":1,"method":"query",
-            "monitor_contract":"example.observation","parameter_bindings":{"target_key":"/target_key"},
-            "error_levels":["ERROR","CRITICAL"]}]}),
+        "permissions":["monitor.read","logs.read","extension.read","incident.read"],"allowed_origins":[],"data_dir":directory,
+        "harness_config":null,"extensions_config":extensions,"repair_config":null,"monitors_config":monitors}),
     )?;
     let (state, engine) = Console::open(config.clone()).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut summary = Value::Null;
+    for _ in 0..200 {
+        summary = call(address, "/api/v1/monitors", AUTH).await?.1;
+        if summary["items"].as_array().is_some_and(|items| {
+            items.len() == 2
+                && items.iter().all(|item| item["coverage"] == "complete")
+                && items
+                    .iter()
+                    .any(|item| item["id"] == "monitor-a" && item["received_error_count"] == 32)
+        }) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let items = summary["items"]
+        .as_array()
+        .ok_or("receiver summary required")?;
+    assert!(
+        items.iter().all(|item| item["logs_available"] == true
+            && item["owner_plugin_id"] == "observation-provider")
+    );
+    let detail = call(address, "/api/v1/monitors/monitor-a", AUTH).await?.1;
+    assert_eq!(
+        detail["received_error_count"], 32,
+        "Node errors must first commit before HTTP can read them"
+    );
+    assert_eq!(detail["last_error_log"]["message"], fixture_message(32));
+    assert!(
+        detail.get("health").is_none(),
+        "Host does not infer target health"
+    );
+    let node_calls = NODE_CALLS.load(Ordering::SeqCst);
+    let incidents_before = call(address, "/api/v1/incidents?limit=100", AUTH).await?.1;
+    let (status, operations_before) = call(address, "/api/v1/operations?limit=100", AUTH).await?;
+    assert_eq!(status, 200);
     assert_eq!(
         call(address, "/api/v1/monitors/monitor-a/logs", "")
             .await?
             .0,
         401
     );
-    let (status, summary) = call(address, "/api/v1/monitors", AUTH).await?;
-    assert_eq!(status, 200);
-    assert!(
-        summary["items"]
-            .as_array()
-            .ok_or("monitor summaries required")?
-            .iter()
-            .all(|monitor| monitor["logs_available"] == true)
-    );
-    assert_eq!(summary["plugins"][0]["id"], "observation-provider");
-    assert_eq!(summary["plugins"][0]["registration"], "registered");
-    assert_eq!(summary["plugins"][0]["view_registration"], "registered");
-    assert_eq!(summary["plugins"][0]["monitor_count"], 2);
-    assert!(
-        summary["items"]
-            .as_array()
-            .ok_or("monitor summaries required")?
-            .iter()
-            .all(|monitor| monitor["owner_plugin_id"] == "observation-provider")
-    );
-    let mut observed_value = Value::Null;
-    for _ in 0..100 {
-        let (status, detail) = call(address, "/api/v1/monitors/monitor-a", AUTH).await?;
-        assert_eq!(status, 200);
-        observed_value = detail["last_value"].clone();
-        if observed_value == json!({"ready":true}) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        observed_value,
-        json!({"ready":true}),
-        "monitor snapshot must retain the complete bounded observation value"
-    );
-    let (status, plugin_page) = call(
-        address,
-        "/api/v1/monitoring/plugins/observation-provider",
-        AUTH,
-    )
-    .await?;
-    assert_eq!(status, 200);
-    assert_eq!(plugin_page["view_status"], "ready");
-    assert_eq!(
-        plugin_page["view"]["title"],
-        "Observation provider <script>"
-    );
-    assert_eq!(plugin_page["view"]["sections"][0]["monitor_role"], "status");
-    assert_eq!(plugin_page["monitors"].as_array().unwrap().len(), 2);
-    assert!(
-        plugin_page["monitors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|monitor| monitor["view_role"] == "status"
-                && monitor["owner_plugin_id"] == "observation-provider")
-    );
-    assert_eq!(
-        plugin_page["monitors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|monitor| monitor["id"] == "monitor-a")
-            .ok_or("monitor-a plugin projection required")?["last_value"],
-        json!({"ready":true})
-    );
     let (status, first) = call(address, "/api/v1/monitors/monitor-a/logs", AUTH).await?;
     assert_eq!(status, 200);
+    assert_eq!(first["items"], first["errors"]);
+    assert_eq!(first["items"][0]["node_log_id"], "a-01");
+    assert_eq!(first["items"][0]["message"], fixture_message(1));
+    assert_eq!(first["items"][0]["level"], "ERROR");
+    assert_eq!(first["items"][0]["event"], "target.failure");
+    assert_eq!(first["full_log"], false);
+    assert_eq!(first["record_kind"], "node_error");
     assert_eq!(
-        first["items"]
-            .as_array()
-            .ok_or("log entries required")?
-            .len(),
-        2
+        first["has_more"], true,
+        "byte limit must paginate a full accepted batch"
     );
-    assert_eq!(first["errors"][0]["id"], "a-2");
-    assert_eq!(first["target_id"], "target-a");
-    assert_eq!(first["stream_label"], "stream-a");
-    assert_eq!(first["available_streams"], json!([]));
-    let cursor = first["next_cursor"]
+    assert!(serde_json::to_vec(&first)?.len() <= 256 * 1024);
+    let mut all = first["items"]
+        .as_array()
+        .ok_or("receipt page required")?
+        .clone();
+    let first_cursor = first["next_cursor"]
         .as_str()
-        .ok_or("server cursor required")?;
-    assert_ne!(cursor, "a:2", "HTTP must issue its own target-bound cursor");
+        .ok_or("receipt cursor required")?
+        .to_owned();
+    let mut cursor = first_cursor.clone();
+    let mut pages = 1;
+    loop {
+        let path = format!("/api/v1/monitors/monitor-a/logs?cursor={cursor}");
+        let (status, page) = call(address, &path, AUTH).await?;
+        assert_eq!(status, 200);
+        assert_eq!(page["items"], page["errors"]);
+        assert!(serde_json::to_vec(&page)?.len() <= 256 * 1024);
+        all.extend(
+            page["items"]
+                .as_array()
+                .ok_or("receipt page required")?
+                .clone(),
+        );
+        cursor = page["next_cursor"]
+            .as_str()
+            .ok_or("next receipt cursor required")?
+            .to_owned();
+        pages += 1;
+        assert!(pages < 5, "page cursor must make bounded progress");
+        if page["has_more"] == false {
+            break;
+        }
+    }
+    assert_eq!(all.len(), 32, "pagination must not skip accepted errors");
+    for (index, item) in all.iter().enumerate() {
+        assert_eq!(item["node_log_id"], format!("a-{:02}", index + 1));
+        assert_eq!(item["message"], fixture_message(index + 1));
+        if index > 0 {
+            assert!(all[index - 1]["id"].as_str() < item["id"].as_str());
+        }
+    }
+    let tail_path = format!("/api/v1/monitors/monitor-a/logs?cursor={cursor}");
+    let tail = call(address, &tail_path, AUTH).await?.1;
+    assert_eq!(tail["items"], json!([]));
+    assert_eq!(tail["next_cursor"], cursor);
+    let replay = call(
+        address,
+        &format!("/api/v1/monitors/monitor-a/logs?cursor={first_cursor}"),
+        AUTH,
+    )
+    .await?
+    .1;
+    assert_eq!(
+        replay["items"],
+        json!(all[first["items"].as_array().unwrap().len()..])
+    );
     assert_eq!(
         call(
             address,
-            &format!("/api/v1/monitors/monitor-b/logs?cursor={cursor}"),
+            &format!("/api/v1/monitors/monitor-b/logs?cursor={first_cursor}"),
             AUTH
         )
         .await?
@@ -623,58 +538,15 @@ async fn run() -> TestResult {
         409
     );
     assert_eq!(
-        call(address, "/api/v1/monitors/monitor-a/logs?cursor=a:2", AUTH)
-            .await?
-            .0,
+        call(
+            address,
+            "/api/v1/monitors/monitor-a/logs?cursor=received-32",
+            AUTH
+        )
+        .await?
+        .0,
         409
     );
-    append(
-        &file,
-        json!({"id":"a-3","timestamp":3,"level":"CRITICAL","message":"new condition record"}),
-    )?;
-    std::fs::write(directory.join("fail-next-query"), "offline")?;
-    let (status, temporary) = call(
-        address,
-        &format!("/api/v1/monitors/monitor-a/logs?cursor={cursor}"),
-        AUTH,
-    )
-    .await?;
-    assert_eq!(status, 503);
-    assert_eq!(
-        temporary["error"]["code"], "logs_read_failed",
-        "registered provider failure should allow GET backoff recovery"
-    );
-    let (status, second) = call(
-        address,
-        &format!("/api/v1/monitors/monitor-a/logs?cursor={cursor}"),
-        AUTH,
-    )
-    .await?;
-    assert_eq!(status, 200);
-    assert_eq!(
-        second["items"]
-            .as_array()
-            .ok_or("incremental items required")?
-            .len(),
-        1
-    );
-    assert_eq!(second["items"][0]["id"], "a-3");
-    assert_eq!(second["errors"][0]["id"], "a-3");
-    let cursor2 = second["next_cursor"]
-        .as_str()
-        .ok_or("incremental cursor required")?;
-    std::fs::write(&file, "")?;
-    let (status, invalid) = call(
-        address,
-        &format!("/api/v1/monitors/monitor-a/logs?cursor={cursor2}"),
-        AUTH,
-    )
-    .await?;
-    assert_eq!(status, 409);
-    assert_eq!(invalid["error"]["code"], "cursor_invalid");
-    let (status, reset) = call(address, "/api/v1/monitors/monitor-a/logs", AUTH).await?;
-    assert_eq!(status, 200);
-    assert_eq!(reset["items"], json!([]));
     assert_eq!(
         call(
             address,
@@ -686,48 +558,158 @@ async fn run() -> TestResult {
         400
     );
     assert_eq!(
+        call(address, "/api/v1/monitors/monitor-a/logs?limit=33", AUTH)
+            .await?
+            .0,
+        400
+    );
+    assert_eq!(
         call(address, "/api/v1/monitors/missing/logs", AUTH)
             .await?
             .0,
         404
+    );
+    let empty = call(address, "/api/v1/monitors/monitor-b/logs", AUTH)
+        .await?
+        .1;
+    assert_eq!(empty["items"], json!([]));
+    assert!(empty.get("health").is_none());
+    let one = call(address, "/api/v1/monitors/monitor-a/logs?limit=1", AUTH)
+        .await?
+        .1;
+    assert_eq!(one["items"].as_array().unwrap().len(), 1);
+    assert_eq!(one["has_more"], true);
+    let plugin_page = call(
+        address,
+        "/api/v1/monitoring/plugins/observation-provider",
+        AUTH,
+    )
+    .await?
+    .1;
+    assert_eq!(plugin_page["view_status"], "ready");
+    assert_eq!(
+        plugin_page["view"]["sections"][0]["fields"][0]["source"],
+        "last_error_log"
+    );
+    assert_eq!(plugin_page["monitors"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        NODE_CALLS.load(Ordering::SeqCst),
+        node_calls,
+        "HTTP receipt reads must not dispatch Node calls"
+    );
+    assert_eq!(
+        call(address, "/api/v1/incidents?limit=100", AUTH).await?.1["items"],
+        incidents_before["items"],
+        "GET must not mutate incident revisions"
+    );
+    assert_eq!(
+        call(address, "/api/v1/operations?limit=100", AUTH).await?.1["items"],
+        operations_before["items"],
+        "GET must not create application/Core work"
+    );
+    assert_eq!(
+        call(address, "/api/v1/monitors/monitor-a", AUTH).await?.1["cursor"],
+        detail["cursor"],
+        "HTTP paging must not move the Node checkpoint"
+    );
+    node.shutdown()?;
+    let offline = call(address, "/api/v1/monitors/monitor-a/logs", AUTH).await?;
+    assert_eq!(
+        offline.0, 200,
+        "accepted receipts remain readable with the Node disconnected"
+    );
+    assert_eq!(offline.1["items"], first["items"]);
+    server.abort();
+    let _ = server.await;
+    state.shutdown().await?;
+    engine.shutdown().await?;
+    drop(state);
+
+    // A fresh HTTP cursor table must not revive stale cursors; durable receipts survive.
+    let node = provider_server("node", &directory)?;
+    write_extensions(&node)?;
+    let (state, engine) = Console::open(config.clone()).await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    assert_eq!(
+        call(
+            address,
+            &format!("/api/v1/monitors/monitor-a/logs?cursor={first_cursor}"),
+            AUTH
+        )
+        .await?
+        .0,
+        409
+    );
+    assert_eq!(
+        call(address, "/api/v1/monitors/monitor-a/logs", AUTH)
+            .await?
+            .1["items"],
+        first["items"]
     );
     server.abort();
     let _ = server.await;
     state.shutdown().await?;
     engine.shutdown().await?;
     drop(state);
-
-    let mut restricted = config;
-    restricted
-        .permissions
-        .retain(|permission| permission != "extension.read");
-    let (state, engine) = Console::open(restricted).await?;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let app = router(state.clone());
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let (status, plugin_page) = call(
-        address,
-        "/api/v1/monitoring/plugins/observation-provider",
-        AUTH,
-    )
-    .await?;
-    assert_eq!(status, 200);
-    assert_eq!(plugin_page["view_status"], "permission_denied");
-    assert!(plugin_page["view"].is_null());
-    assert_eq!(plugin_page["monitors"].as_array().unwrap().len(), 2);
-    server.abort();
-    let _ = server.await;
-    state.shutdown().await?;
-    engine.shutdown().await?;
-    drop(state);
-
+    for denied in ["extension.read", "logs.read"] {
+        let mut restricted = config.clone();
+        restricted
+            .permissions
+            .retain(|permission| permission != denied);
+        let (state, engine) = Console::open(restricted).await?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let app = router(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let page = call(
+            address,
+            "/api/v1/monitoring/plugins/observation-provider",
+            AUTH,
+        )
+        .await?
+        .1;
+        assert_eq!(page["monitors"].as_array().unwrap().len(), 2);
+        if denied == "extension.read" {
+            assert_eq!(page["view_status"], "permission_denied");
+            assert!(page["view"].is_null());
+        } else {
+            assert_eq!(page["view_status"], "ready");
+            assert!(
+                page["monitors"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|monitor| monitor.get("last_error_log").is_none()),
+                "plugin monitor projections must not bypass logs.read"
+            );
+            let detail = call(address, "/api/v1/monitors/monitor-a", AUTH).await?.1;
+            assert!(
+                detail.get("last_error_log").is_none(),
+                "monitor detail must not bypass logs.read"
+            );
+        }
+        assert_eq!(
+            call(address, "/api/v1/monitors/monitor-a/logs", AUTH)
+                .await?
+                .0,
+            403
+        );
+        server.abort();
+        let _ = server.await;
+        state.shutdown().await?;
+        engine.shutdown().await?;
+        drop(state);
+    }
+    node.shutdown()?;
+    owner.shutdown()?;
     owner_provider_http(&directory, &token).await?;
-    provider.shutdown()?;
     assert_eq!(directory.parent(), Some(root.as_path()));
     std::fs::remove_dir_all(&directory)?;
     println!(
-        "isolated provider HTTP observation records and owner/provider projection: records, binding, auth and bounds passed"
+        "isolated Node error receipt HTTP tests: persistence, read-only paging, auth, bounds and plugin ownership passed"
     );
     Ok(())
 }

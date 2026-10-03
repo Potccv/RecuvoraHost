@@ -5,7 +5,6 @@ mod discovery;
 mod engine;
 mod handle;
 mod observation;
-mod rules;
 mod scheduler;
 mod shared;
 mod snapshot;
@@ -19,11 +18,10 @@ pub use discovery::{
 pub use engine::MonitorEngine;
 pub use handle::{MonitorHandle, MonitorIncidentLease};
 pub use observation::{
-    BatchCoverage, ObservationBatch, ObservationFuture, ObservationRequest, ObservationSample,
-    ObservationSource,
+    BatchCoverage, ErrorLogBatch, NodeErrorLog, ObservationBatch, ObservationFuture,
+    ObservationRequest, ObservationSample, ObservationSource,
 };
-pub use rules::{MonitorRule, RuleOperator};
-pub use snapshot::{Coverage, Freshness, MonitorSnapshot, MonitoringSnapshot, TargetHealth};
+pub use snapshot::{Coverage, Freshness, MonitorSnapshot, MonitoringSnapshot};
 
 use crate::persistence::incidents::IncidentError;
 use thiserror::Error;

@@ -2,13 +2,13 @@
 
 | 模块 | 职责 |
 | --- | --- |
-| [control](control/README.md) | 故障活动事实、监控检查点及其提交与重放 |
+| [control](control/README.md) | 不可变错误收据、来源覆盖、接收检查点及其提交与重放 |
 | [boot](boot/README.md)、[configuration](configuration/README.md) | 可信服务装配、配置加载和控制路径保护 |
 | [application](application/README.md) | 应用服务、操作受理与持久回执、取消和共享服务生命周期 |
-| [recovery](recovery/README.md) | Core 能力注入、恢复聚合提交、当前故障门、目标所有权和受管调度 |
+| [recovery](recovery/README.md) | Core 能力注入、恢复聚合提交、错误收据复核、目标所有权和受管调度 |
 | [runtime](runtime/README.md) | 通用取消与在途调用监督；可信模块生命周期、依赖、服务和事件框架 |
 | [persistence](persistence/README.md) | Core 与故障台账提案的可靠提交、配置绑定与当前日志恢复 |
-| [monitoring](monitoring/README.md) | Host 定时轮询、规则、时效、覆盖、发现与故障联动 |
+| [monitoring](monitoring/README.md) | Node 错误日志接收、来源时效/覆盖、发现与持久收件 |
 | [harnesses](harnesses/README.md) | Harness 注册、选择、会话/项目/工具接口约定与校验 |
 | [protocol](protocol/README.md) | Host 的消息、schema、ID 与限额实现；外部节点按文档独立接入 |
 | [integrations](integrations/README.md) | 协议会话、ExtensionRegistry、远端 Harness/监控/修复后端 |

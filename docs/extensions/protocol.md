@@ -150,7 +150,7 @@ Harness 项目、执行/审批会话与工具回调通过现有 Call/Result/Call
 
 修复节点可提供 inspect、verify、execute_script 和可选只读 reconcile。Host 的显式结果核实从绑定节点取得原操作执行事实，再独立 verify，交由 Core 检查并持久保存；这是明确触发的只读核实，不是自动对账、断连重试或重放脚本。execute_script 仍只能在 Core 消费一次许可后由可信内部路由派发。具体证据格式与恢复流程由 Host 维护，不加入共同 `Outcome`。
 
-Host 还可消费 `recuvora.monitoring_view.v1` 能力下的只读 `describe_monitoring_view`，校验声明式数据后通过其 HTTP UI catalog/view 展示；描述调用有独立容量且不授予普通节点读取回调权限。配置绑定的目标记录查询同样使用已有只读契约调用。UI 描述、HTTP 路由、日志来源配置和业务字段不属于Host 协议模块，Host 协议模块不运行插件 HTML 或脚本。
+Host 还可消费 `recuvora.monitoring_view.v1` 能力下的只读 `describe_monitoring_view`，校验声明式数据后通过其 HTTP UI catalog/view 展示；描述调用有独立容量且不授予普通节点读取回调权限。Node 错误日志通过已登记的只读契约按错误批次 v2 接收，可靠保存后直接交给 Core；HTTP 日志查询读取这份持久收件。UI 描述、HTTP 路由、错误来源配置和业务字段不属于 Host 协议模块，Host 协议模块不运行插件 HTML 或脚本。
 
 独立页面的可选 `recuvora.ui_links.v1` 能力由[插件独立页面约定 v1](pages.md)定义，复用现有消息承载页面描述，不扩展 Ready 外壳；Host/UI 接入状态见 [HOST-004](../status.md#host-004)。
 

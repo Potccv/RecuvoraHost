@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "target_id": "target-001",
+  "source_id": "source-001",
+  "generation": "generation-1",
+  "cursor": null,
+  "next_cursor": "cursor-1",
+  "coverage": "complete",
+  "has_more": false,
+  "source_error": null,
+  "errors": [
+    {
+      "id": "error-1",
+      "sequence": 1,
+      "age_ms": 0,
+      "fingerprint": "workload-condition-v1",
+      "message": "Workload reported an error.\nOriginal error detail.",
+      "evidence": { "record_id": "provider-record-1" }
+    }
+  ]
+}

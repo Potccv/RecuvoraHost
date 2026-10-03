@@ -8,7 +8,6 @@ mod project_logs;
 mod recovery;
 mod static_files;
 mod views;
-pub use project_logs::{LogResultMapping, LogSourceConfig};
 
 #[cfg(test)]
 use crate::application::journal::Journal;
@@ -81,8 +80,6 @@ pub struct ServerConfig {
     pub monitors_config: Option<PathBuf>,
     #[serde(default)]
     pub recovery_config: Option<PathBuf>,
-    #[serde(default)]
-    pub log_sources: Vec<LogSourceConfig>,
     /// Optional externally built official UI directory, snapshotted at startup.
     #[serde(default)]
     pub ui_dir: Option<PathBuf>,
@@ -212,7 +209,6 @@ impl Console {
         config: ServerConfig,
         additional_protected: &[PathBuf],
     ) -> Result<(Arc<Self>, Engine), ApiError> {
-        project_logs::validate_sources(&config.log_sources)?;
         if config.schema_version != 1
             || !config.listen.ip().is_loopback()
             || !valid_id(&config.operator)

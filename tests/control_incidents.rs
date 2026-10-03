@@ -361,3 +361,37 @@ fn scale_healthy_polling_and_incident_growth_keep_requests_bounded() {
         );
     }
 }
+
+#[test]
+fn error_receipts_are_immutable_independent_and_never_cleared_by_observation() {
+    let mut first = commit(1, SignalCondition::Active);
+    first.signals[0].kind = IncidentKind::ErrorLog;
+    first.signals[0].rule_id = "error-id-1".into();
+    first.signals[0].summary = "\u{1f}".repeat(8192);
+    first.signals[0].evidence = json!({"log":{"message":first.signals[0].summary}});
+    let ledger = apply(&empty(), first.clone());
+    assert_eq!(ledger.list()[0].summary, first.signals[0].summary);
+    let id = ledger.list()[0].id.clone();
+    let mut duplicate = first.clone();
+    duplicate.sequence = 2;
+    duplicate.checkpoint = json!({"cursor":2});
+    let ledger = apply(&ledger, duplicate.clone());
+    assert_eq!(ledger.list().len(), 1);
+    assert_eq!(ledger.get(&id).unwrap().revision, 1);
+    assert_eq!(ledger.get(&id).unwrap().occurrences, 1);
+    let mut changed = duplicate.clone();
+    changed.sequence = 3;
+    changed.signals[0].summary = "changed".into();
+    assert!(ledger.prepare_monitor("changed".into(), changed).is_err());
+    let mut clear = duplicate.clone();
+    clear.sequence = 3;
+    clear.signals[0].condition = SignalCondition::Clear;
+    assert!(ledger.prepare_monitor("clear".into(), clear).is_err());
+    let mut second = duplicate;
+    second.sequence = 3;
+    second.signals[0].rule_id = "error-id-2".into();
+    let ledger = apply(&ledger, second);
+    assert_eq!(ledger.list().len(), 2);
+    let restored = IncidentLedger::restore(IncidentLimits::default(), ledger.entries()).unwrap();
+    assert_eq!(restored.list(), ledger.list());
+}

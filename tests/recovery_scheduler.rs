@@ -1,8 +1,8 @@
 use recuvora_core::recovery::approval::{
     ApprovalDecision, ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity,
 };
+use recuvora_host::integrations::recovery::RecoveryScheduler;
 use recuvora_host::integrations::recovery::*;
-use recuvora_host::integrations::recovery::{IncidentTrigger, RecoveryScheduler};
 use recuvora_host::monitoring::*;
 use recuvora_host::runtime::operation::Cancellation;
 use serde_json::json;
@@ -50,19 +50,9 @@ fn config() -> RecoveryConfig {
     }
 }
 
-fn trigger() -> IncidentTrigger {
-    IncidentTrigger {
-        monitor_id: "monitor-a".into(),
-        rule_id: "monitor-a".into(),
-        fingerprint: "not-ready".into(),
-        keywords: vec!["readiness".into()],
-        conditions: BTreeMap::from([("workload_version".into(), "1".into())]),
-    }
-}
-
 fn monitor_config() -> MonitorsConfig {
     MonitorsConfig {
-        schema_version: 1,
+        schema_version: 2,
         discoveries: Vec::new(),
         monitors: vec![MonitorDefinition {
             id: "monitor-a".into(),
@@ -78,13 +68,6 @@ fn monitor_config() -> MonitorsConfig {
             timeout_ms: 100,
             stale_after_ms: 1000,
             startup_grace_ms: 10,
-            rule: MonitorRule {
-                pointer: "/ready".into(),
-                operator: RuleOperator::Eq,
-                value: json!(true),
-                failure_samples: 1,
-                success_samples: 1,
-            },
         }],
     }
 }
@@ -95,28 +78,68 @@ struct Source {
 }
 impl ObservationSource for Source {
     fn poll(&self, request: ObservationRequest, _: Cancellation) -> ObservationFuture<'_> {
-        let sequence = self.sequence.fetch_add(1, Ordering::SeqCst) + 1;
+        self.sequence.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             if self.unavailable {
                 return Err(MonitorError::Observation("source unavailable".into()));
             }
             Ok(ObservationBatch {
-                schema_version: 1,
+                schema_version: 2,
                 target_id: "target-a".into(),
                 source_id: "source-a".into(),
                 generation: "generation-a".into(),
                 cursor: request.params["cursor"].as_str().map(str::to_owned),
-                next_cursor: sequence.to_string(),
+                next_cursor: "cursor-1".into(),
                 coverage: BatchCoverage::Complete,
                 has_more: false,
-                error: None,
-                samples: vec![ObservationSample {
-                    id: format!("sample-{sequence}"),
-                    sequence,
-                    age_ms: 0,
-                    value: json!({"ready":false}),
-                    evidence: json!({"origin":"test-observation"}),
+                source_error: None,
+                errors: vec![NodeErrorLog {
+                    id: "error-1".into(),
+                    sequence: 1,
+                    age_ms: 86_400_000,
+                    fingerprint: "workload-exited".into(),
+                    message: "ERROR workload exited\n  source stack trace".into(),
+                    evidence: json!({"exit_code":17,"origin":"node-log"}),
                 }],
+            })
+        })
+    }
+}
+
+#[derive(Default)]
+struct DelayedErrors {
+    available: AtomicBool,
+    polls: AtomicUsize,
+}
+impl ObservationSource for DelayedErrors {
+    fn poll(&self, request: ObservationRequest, _: Cancellation) -> ObservationFuture<'_> {
+        let available = self.available.load(Ordering::SeqCst);
+        self.polls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            Ok(ErrorLogBatch {
+                schema_version: 2,
+                target_id: "target-a".into(),
+                source_id: "source-a".into(),
+                generation: "generation-a".into(),
+                cursor: request.params["cursor"].as_str().map(str::to_owned),
+                next_cursor: if available { "cursor-2" } else { "cursor-0" }.into(),
+                coverage: BatchCoverage::Complete,
+                has_more: false,
+                source_error: None,
+                errors: if available {
+                    (1..=2)
+                        .map(|sequence| NodeErrorLog {
+                            id: format!("error-{sequence}"),
+                            sequence,
+                            age_ms: 86_400_000,
+                            fingerprint: "same-error-kind".into(),
+                            message: format!("ERROR original record {sequence}\n  完整错误堆栈"),
+                            evidence: json!({"record":sequence}),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
             })
         })
     }
@@ -201,7 +224,7 @@ async fn wait_for(mut condition: impl FnMut() -> bool) {
 }
 
 #[tokio::test]
-async fn same_active_incident_is_not_reinspected_after_terminal_task_or_restart() {
+async fn same_error_log_is_not_reinspected_after_terminal_task_or_restart() {
     let dir = TestDir::new("scheduler-dedup");
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
@@ -223,7 +246,6 @@ async fn same_active_incident_is_not_reinspected_after_terminal_task_or_restart(
     let scheduler = RecoveryScheduler::start(
         recovery.clone(),
         monitor.handle(),
-        vec![trigger()],
         Duration::from_millis(10),
     )
     .unwrap();
@@ -238,6 +260,16 @@ async fn same_active_incident_is_not_reinspected_after_terminal_task_or_restart(
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(backend.inspections.load(Ordering::SeqCst), 2);
     assert_eq!(recovery.tasks().unwrap().len(), 1);
+    let received = &recovery.tasks().unwrap()[0].problem;
+    assert_eq!(received.origin, ProblemOrigin::ErrorLog);
+    assert_eq!(
+        received.summary,
+        "ERROR workload exited\n  source stack trace"
+    );
+    let report = received.report.as_ref().unwrap();
+    assert_eq!(report.age_ms, 86_400_000);
+    assert_eq!(report.evidence, json!({"exit_code":17,"origin":"node-log"}));
+
     scheduler.shutdown().await.unwrap();
     assert!(monitor.handle().snapshot().unwrap().running);
     drop(scheduler);
@@ -252,7 +284,6 @@ async fn same_active_incident_is_not_reinspected_after_terminal_task_or_restart(
     let scheduler = RecoveryScheduler::start(
         reopened.clone(),
         monitor.handle(),
-        vec![trigger()],
         Duration::from_millis(10),
     )
     .unwrap();
@@ -283,13 +314,8 @@ async fn shutdown_cancels_and_waits_for_original_inspection_without_stopping_mon
             FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
         ))
         .unwrap();
-    let scheduler = RecoveryScheduler::start(
-        recovery,
-        monitor.handle(),
-        vec![trigger()],
-        Duration::from_millis(10),
-    )
-    .unwrap();
+    let scheduler =
+        RecoveryScheduler::start(recovery, monitor.handle(), Duration::from_millis(10)).unwrap();
     wait_for(|| backend.inspections.load(Ordering::SeqCst) == 1).await;
     tokio::time::timeout(Duration::from_secs(3), scheduler.shutdown())
         .await
@@ -303,7 +329,7 @@ async fn shutdown_cancels_and_waits_for_original_inspection_without_stopping_mon
 }
 
 #[tokio::test]
-async fn coverage_failure_never_creates_a_repair_task() {
+async fn source_failure_never_invents_an_error_log_or_repair_task() {
     let dir = TestDir::new("scheduler-coverage");
     let mut monitor = MonitorEngine::start_with_source(
         monitor_config(),
@@ -328,11 +354,26 @@ async fn coverage_failure_never_creates_a_repair_task() {
     let scheduler = RecoveryScheduler::start(
         recovery.clone(),
         monitor.handle(),
-        vec![trigger()],
         Duration::from_millis(10),
     )
     .unwrap();
-    wait_for(|| !monitor.handle().incidents().unwrap().is_empty()).await;
+    wait_for(|| {
+        monitor
+            .handle()
+            .monitor("monitor-a")
+            .unwrap()
+            .is_some_and(|view| view.last_error.is_some())
+    })
+    .await;
+    assert!(
+        monitor
+            .handle()
+            .incidents()
+            .unwrap()
+            .iter()
+            .all(|record| record.kind
+                != recuvora_host::control::recovery::incidents::IncidentKind::ErrorLog)
+    );
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert!(recovery.tasks().unwrap().is_empty());
     scheduler.shutdown().await.unwrap();
@@ -364,7 +405,6 @@ async fn human_wait_does_not_start_repeated_inspections_or_block_shutdown() {
     let scheduler = RecoveryScheduler::start(
         recovery.clone(),
         monitor.handle(),
-        vec![trigger()],
         Duration::from_millis(10),
     )
     .unwrap();
@@ -379,6 +419,187 @@ async fn human_wait_does_not_start_repeated_inspections_or_block_shutdown() {
     tokio::time::sleep(Duration::from_millis(60)).await;
     assert_eq!(backend.inspections.load(Ordering::SeqCst), 1);
     assert_eq!(recovery.tasks().unwrap().len(), 1);
+    scheduler.shutdown().await.unwrap();
+    monitor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn durable_receipts_wake_scheduler_and_busy_backlog_runs_without_poll_delay() {
+    let dir = TestDir::new("scheduler-receipt-wakeup");
+    let source = Arc::new(DelayedErrors::default());
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        source.clone(),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    wait_for(|| {
+        monitor
+            .handle()
+            .monitor("monitor-a")
+            .unwrap()
+            .unwrap()
+            .cursor
+            .is_some()
+    })
+    .await;
+    let backend = Arc::new(Backend::new(false));
+    let recovery =
+        RecoveryService::open(dir.path.join("recovery"), config(), backend.clone()).unwrap();
+    recovery
+        .bind_target_ownership(Arc::new(
+            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
+        ))
+        .unwrap();
+    let scheduler = RecoveryScheduler::start(
+        recovery.clone(),
+        monitor.handle(),
+        Duration::from_secs(3600),
+    )
+    .unwrap();
+    // The initial scan has no receipts. Both the first task and the Busy retry
+    // must therefore finish through notifications, well before the 1h timer.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(recovery.tasks().unwrap().is_empty());
+    source.available.store(true, Ordering::SeqCst);
+    wait_for(|| {
+        let tasks = recovery.tasks().unwrap();
+        tasks.len() == 2 && tasks.iter().all(|task| task.stage == RecoveryStage::Denied)
+    })
+    .await;
+    assert_eq!(backend.inspections.load(Ordering::SeqCst), 4);
+    for task in recovery.tasks().unwrap() {
+        let report = task.problem.report.as_ref().unwrap();
+        assert_eq!(
+            task.problem.summary,
+            format!("ERROR original record {}\n  完整错误堆栈", report.sequence)
+        );
+        assert_eq!(report.evidence, json!({"record":report.sequence}));
+    }
+    scheduler.shutdown().await.unwrap();
+    monitor.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn busy_receipt_survives_both_services_restart_and_keeps_original_identity() {
+    let dir = TestDir::new("scheduler-persisted-backlog");
+    let source = Arc::new(DelayedErrors::default());
+    source.available.store(true, Ordering::SeqCst);
+    let mut monitor = MonitorEngine::start_with_source(
+        monitor_config(),
+        source.clone(),
+        dir.path.join("monitor"),
+    )
+    .unwrap();
+    wait_for(|| {
+        monitor
+            .handle()
+            .incidents()
+            .unwrap()
+            .iter()
+            .filter(|record| {
+                record.kind == recuvora_host::control::recovery::incidents::IncidentKind::ErrorLog
+            })
+            .count()
+            == 2
+    })
+    .await;
+    let mut settings = config();
+    settings.approval.reviewer = ReviewerConfig::Human;
+    let backend = Arc::new(Backend::new(false));
+    let recovery =
+        RecoveryService::open(dir.path.join("recovery"), settings.clone(), backend.clone())
+            .unwrap();
+    recovery
+        .bind_target_ownership(Arc::new(
+            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
+        ))
+        .unwrap();
+    let scheduler = RecoveryScheduler::start(
+        recovery.clone(),
+        monitor.handle(),
+        Duration::from_millis(10),
+    )
+    .unwrap();
+    wait_for(|| {
+        recovery
+            .tasks()
+            .unwrap()
+            .first()
+            .is_some_and(|task| task.stage == RecoveryStage::AwaitingApproval)
+    })
+    .await;
+    let accepted = recovery.tasks().unwrap().remove(0);
+    let receipts: Vec<_> = monitor
+        .handle()
+        .incidents()
+        .unwrap()
+        .into_iter()
+        .filter(|record| {
+            record.kind == recuvora_host::control::recovery::incidents::IncidentKind::ErrorLog
+        })
+        .collect();
+    assert_eq!(recovery.tasks().unwrap().len(), 1);
+    scheduler.shutdown().await.unwrap();
+    monitor.shutdown().await.unwrap();
+    drop(scheduler);
+    drop(recovery);
+    drop(monitor);
+
+    let mut monitor =
+        MonitorEngine::start_with_source(monitor_config(), source, dir.path.join("monitor"))
+            .unwrap();
+    let recovery =
+        RecoveryService::open(dir.path.join("recovery"), settings, backend.clone()).unwrap();
+    recovery
+        .bind_target_ownership(Arc::new(
+            FileTargetOwnership::open(dir.path.join("ownership")).unwrap(),
+        ))
+        .unwrap();
+    let restored = recovery.query(&accepted.id).unwrap().unwrap();
+    assert_eq!(restored.stage, RecoveryStage::Paused);
+    recovery.resume(&accepted.id, restored.revision).unwrap();
+    let approval = recovery.approval(&accepted.id).unwrap().unwrap();
+    recovery
+        .decide_human(
+            &accepted.id,
+            approval.revision,
+            ApprovalDecision::Deny,
+            "operator".into(),
+            "reviewed original receipt".into(),
+        )
+        .unwrap();
+    let scheduler = RecoveryScheduler::start(
+        recovery.clone(),
+        monitor.handle(),
+        Duration::from_millis(10),
+    )
+    .unwrap();
+    wait_for(|| {
+        let tasks = recovery.tasks().unwrap();
+        tasks.len() == 2
+            && tasks
+                .iter()
+                .any(|task| task.id != accepted.id && task.stage == RecoveryStage::AwaitingApproval)
+    })
+    .await;
+    assert_eq!(
+        recovery.query(&accepted.id).unwrap().unwrap().problem,
+        accepted.problem
+    );
+    let tasks = recovery.tasks().unwrap();
+    for receipt in receipts {
+        let task = tasks
+            .iter()
+            .find(|task| task.problem.incident_id == receipt.id)
+            .unwrap();
+        assert_eq!(task.problem.summary, receipt.summary);
+        assert_eq!(
+            task.problem.report.as_ref().unwrap().record_id,
+            receipt.evidence["log"]["id"].as_str().unwrap()
+        );
+    }
+    assert_eq!(backend.inspections.load(Ordering::SeqCst), 2);
     scheduler.shutdown().await.unwrap();
     monitor.shutdown().await.unwrap();
 }
