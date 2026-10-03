@@ -8,7 +8,7 @@ use std::{
 };
 
 #[cfg(test)]
-#[path = "../../../tests/recovery_layout.rs"]
+#[path = "../../tests/recovery_layout.rs"]
 mod tests;
 
 pub(crate) struct RootStorageLock {

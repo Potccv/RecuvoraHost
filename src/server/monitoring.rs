@@ -1,6 +1,6 @@
 //! Read models and authenticated acknowledgement of durable incidents.
 use super::*;
-use crate::integrations::extensions::MonitoringViewRegistration;
+use crate::integrations::extensions::{ExtensionRegistry, MonitoringViewRegistration};
 use crate::monitoring::{MonitorError, MonitorSnapshot, MonitoringSnapshot};
 use crate::persistence::incidents::{IncidentError, IncidentRecord};
 use crate::protocol::{ExtensionError, ExtensionKind, valid_id};
@@ -78,8 +78,9 @@ fn monitor_error(error: MonitorError) -> ApiError {
 
 fn service(state: &Console) -> Result<&MonitorHandle, ApiError> {
     state
-        .monitoring
-        .as_deref()
+        .application
+        .monitoring()
+        .map(Arc::as_ref)
         .ok_or_else(|| ApiError::unavailable("monitoring is not configured"))
 }
 
@@ -212,7 +213,7 @@ fn owner_plugin_id(
     contract: &str,
     version: u32,
 ) -> Option<String> {
-    let registry = state.extensions.as_ref()?;
+    let registry = state.application.extensions()?;
     registry
         .contract_owner(contract, version)
         .map(str::to_owned)
@@ -249,7 +250,7 @@ fn discovery_owner(
 }
 
 fn plugin_summaries(state: &Console, snapshot: Option<&MonitoringSnapshot>) -> Vec<Value> {
-    let Some(registry) = &state.extensions else {
+    let Some(registry) = state.application.extensions() else {
         return Vec::new();
     };
     let statuses = registry.statuses();
@@ -345,7 +346,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
     {
         return Ok(Value::Null);
     }
-    let Some(handle) = &state.monitoring else {
+    let Some(handle) = state.application.monitoring() else {
         return Ok(
             json!({"configured":false,"monitors":[],"discoveries":[],"plugins":plugin_summaries(state,None),"runtime_error":null,"counts":{"monitors":0,"targets":0,"unhealthy":0,"stale":0,"collection_issues":0,"incidents":if state.require("incident.read").is_ok(){incident_counts(&[])}else{Value::Null}}}),
         );
@@ -425,8 +426,8 @@ pub(super) async fn plugin_monitoring(
         return Err(ApiError::invalid("invalid plugin identity"));
     }
     let registry = state
-        .extensions
-        .as_ref()
+        .application
+        .extensions()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "plugin not found"))?;
     if !registry
         .definitions()
@@ -440,8 +441,8 @@ pub(super) async fn plugin_monitoring(
         ));
     }
     let snapshot = state
-        .monitoring
-        .as_ref()
+        .application
+        .monitoring()
         .map(|handle| handle.snapshot().map_err(monitor_error))
         .transpose()?;
     let plugin = plugin_summaries(&state, snapshot.as_ref())
@@ -533,8 +534,8 @@ pub(super) async fn plugin_ui_catalog(
         Vec::new()
     };
     let pages = state
-        .extensions
-        .as_ref()
+        .application
+        .extensions()
         .map(|registry| registry.ui_links_catalog())
         .transpose()
         .map_err(|_| ApiError::unavailable("page catalog unavailable"))?
@@ -614,8 +615,8 @@ pub(super) fn repair_source_incident(
     };
     state.require("incident.read")?;
     let config = state
-        .repair_config
-        .as_ref()
+        .application
+        .text_repair_config()
         .ok_or_else(|| ApiError::unavailable("repair target is not configured"))?;
     let record = service(state)?
         .incident(id)
@@ -675,7 +676,7 @@ pub(super) async fn incidents(
             "invalid incident status, cursor or limit",
         ));
     }
-    let mut items = match &state.monitoring {
+    let mut items = match state.application.monitoring() {
         Some(handle) => handle.map_incidents(summary).map_err(monitor_error)?,
         None => Vec::new(),
     };

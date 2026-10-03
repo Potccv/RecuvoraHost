@@ -5,7 +5,7 @@ pub(super) use crate::harnesses::{
     HarnessToolCall, HarnessToolFuture, HarnessToolHandler, HarnessToolResult, RemoteWorkspace,
 };
 pub(super) use crate::integrations::extensions::ExtensionRegistry;
-pub(super) use crate::integrations::recovery::{
+pub(super) use crate::recovery::{
     AuthorizedRepair, BusinessVerification, CheckedExecution, ExecutionResultCheck, RecoveryClock,
     RecoveryConfig, RecoveryError, RecoveryFuture, RecoveryService, RecoveryStage, RecoveryTask,
     RepairBackend, RepairExecutionOutcome, RepairReceipt, ReviewInput, ReviewOutput,

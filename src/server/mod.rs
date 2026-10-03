@@ -2,7 +2,6 @@
 mod handlers;
 mod history;
 mod http;
-mod journal;
 mod monitoring;
 mod plugin_pages;
 mod project_logs;
@@ -11,19 +10,18 @@ mod static_files;
 mod views;
 pub use project_logs::{LogResultMapping, LogSourceConfig};
 
-use crate::boot::host::{
-    HostConfig, HostRuntime, MonitoringHostConfig, load_harness_config, load_repair_config,
-};
+#[cfg(test)]
+use crate::application::journal::Journal;
+use crate::application::{Application, ApplicationError, ApplicationErrorKind, Operation};
 use crate::harnesses::{
     ConversationPlacement, ConversationVisibility, HarnessCancellation, HarnessDefinition,
-    HarnessProjectListRequest, HarnessRegistry, HarnessRunRequest,
+    HarnessProjectListRequest, HarnessRunRequest,
 };
-use crate::integrations::extensions::{ExtensionRegistry, ExtensionsConfig};
-use crate::integrations::recovery::{RecoveryError, RecoveryService};
-use crate::monitoring::{MonitorHandle, MonitorsConfig};
-use crate::persistence::approval::{ApprovalDecision, ApprovalError};
-use crate::repair::{RepairConfig, RepairSession, WorkflowError};
-use crate::simulation::{Engine, EngineConfig, EngineHandle, Simulation, TaskSpec};
+use crate::monitoring::MonitorHandle;
+use crate::persistence::approval::ApprovalDecision;
+use crate::recovery::{RecoveryError, RecoveryService};
+use crate::repair::WorkflowError;
+use crate::simulation::{Engine, Simulation, TaskSpec};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path as RoutePath, Query, Request, State},
@@ -32,7 +30,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use journal::Journal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -130,6 +127,19 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+impl From<ApplicationError> for ApiError {
+    fn from(error: ApplicationError) -> Self {
+        let (status, code) = match error.kind {
+            ApplicationErrorKind::Invalid => (StatusCode::BAD_REQUEST, "invalid_request"),
+            ApplicationErrorKind::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            ApplicationErrorKind::Conflict => (StatusCode::CONFLICT, "conflict"),
+            ApplicationErrorKind::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            ApplicationErrorKind::Unknown => (StatusCode::CONFLICT, "unknown"),
+            ApplicationErrorKind::Capacity => (StatusCode::TOO_MANY_REQUESTS, "capacity"),
+        };
+        Self::new(status, code, error.message)
+    }
+}
 impl From<std::io::Error> for ApiError {
     fn from(e: std::io::Error) -> Self {
         Self::unavailable(e.to_string())
@@ -141,80 +151,21 @@ impl From<serde_json::Error> for ApiError {
     }
 }
 impl From<WorkflowError> for ApiError {
-    fn from(e: WorkflowError) -> Self {
-        match &e {
-            WorkflowError::Approval(
-                ApprovalError::Conflict
-                | ApprovalError::InvalidState(_)
-                | ApprovalError::Expired
-                | ApprovalError::TargetBusy,
-            ) => Self::conflict(e.to_string()),
-            WorkflowError::Approval(ApprovalError::NotFound) => {
-                Self::new(StatusCode::NOT_FOUND, "not_found", e.to_string())
-            }
-            WorkflowError::OutcomeUnknown { .. } => {
-                Self::new(StatusCode::CONFLICT, "unknown", e.to_string())
-            }
-            _ => Self::invalid(e.to_string()),
-        }
+    fn from(error: WorkflowError) -> Self {
+        ApplicationError::from(error).into()
     }
 }
-
 impl From<RecoveryError> for ApiError {
     fn from(error: RecoveryError) -> Self {
-        match &error {
-            RecoveryError::Busy
-            | RecoveryError::Conflict
-            | RecoveryError::Approval(
-                ApprovalError::Conflict
-                | ApprovalError::InvalidState(_)
-                | ApprovalError::Expired
-                | ApprovalError::TargetBusy
-                | ApprovalError::ReviewNotDue
-                | ApprovalError::ReviewTimedOut,
-            ) => Self::conflict(error.to_string()),
-            RecoveryError::Approval(ApprovalError::NotFound) => {
-                Self::new(StatusCode::NOT_FOUND, "not_found", error.to_string())
-            }
-            RecoveryError::Invalid(_)
-            | RecoveryError::Json(_)
-            | RecoveryError::Approval(ApprovalError::Invalid(_) | ApprovalError::OutOfScope) => {
-                Self::invalid(error.to_string())
-            }
-            _ => Self::unavailable(error.to_string()),
-        }
+        ApplicationError::from(error).into()
     }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct Operation {
-    id: String,
-    kind: String,
-    status: String,
-    #[serde(rename = "updatedAt")]
-    updated_at: u64,
-    result: Option<Value>,
-    error: Option<String>,
-    auto_retry: bool,
-    context: Value,
 }
 
 pub struct Console {
     config: ServerConfig,
     assets: static_files::Assets,
-    host: tokio::sync::Mutex<HostRuntime>,
-    accepting: std::sync::atomic::AtomicBool,
     secret: Vec<u8>,
-    registry: Option<Arc<HarnessRegistry>>,
-    extensions: Option<Arc<ExtensionRegistry>>,
-    monitoring: Option<Arc<MonitorHandle>>,
-    repair: Option<Arc<RepairSession>>,
-    repair_config: Option<RepairConfig>,
-    recovery: Option<Arc<RecoveryService>>,
-    recovery_executor: Option<crate::integrations::recovery::ScriptExecutorConfig>,
-    simulation: EngineHandle,
-    journal: Mutex<Journal>,
-    calls: Mutex<BTreeMap<String, HarnessCancellation>>,
+    application: Arc<Application>,
     log_cursors: Mutex<BTreeMap<String, project_logs::LogCursor>>,
 }
 
@@ -239,7 +190,7 @@ fn external(path: &Path) -> Result<PathBuf, ApiError> {
     if !path.is_absolute() {
         return Err(ApiError::invalid("absolute external path required"));
     }
-    crate::boot::host::external_path(path)
+    crate::configuration::external_path(path)
         .and_then(|path| path.canonicalize())
         .map_err(|error| ApiError::invalid(error.to_string()))
 }
@@ -279,53 +230,7 @@ impl Console {
                 "invalid schema, operator, permissions, origin or non-loopback listener",
             ));
         }
-        let data = external(&config.data_dir)?;
-        crate::boot::host::external_path(&data.join("operations.jsonl"))?;
-        crate::boot::host::validate_simulation_paths(&data.join("simulation"))?;
         let assets = static_files::Assets::load(config.ui_dir.as_deref())?;
-        let recovery_config = config
-            .recovery_config
-            .as_ref()
-            .map(|path| {
-                crate::configuration::RecoveryHostConfig::load(&external(path)?)
-                    .map_err(ApiError::from)
-            })
-            .transpose()?;
-        let recovery_executor = recovery_config
-            .as_ref()
-            .map(|config| config.executor.clone());
-        let recovery_storage: Vec<_> = recovery_config
-            .iter()
-            .flat_map(|config| [config.data_dir.clone(), config.ownership_dir.clone()])
-            .collect();
-        for storage in &recovery_storage {
-            // A dedicated authority directory must not contain application controls.
-            if storage.starts_with(&data) || data.starts_with(storage) {
-                return Err(ApiError::invalid(
-                    "recovery storage must be separate from console storage",
-                ));
-            }
-            for path in [
-                Some(&config.token_file),
-                config.harness_config.as_ref(),
-                config.extensions_config.as_ref(),
-                config.repair_config.as_ref(),
-                config.monitors_config.as_ref(),
-                config.ui_dir.as_ref(),
-                config.recovery_config.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .chain(additional_protected.iter())
-            {
-                let path = external(path)?;
-                if path.starts_with(storage) || storage.starts_with(&path) {
-                    return Err(ApiError::invalid(
-                        "recovery storage overlaps an application control path",
-                    ));
-                }
-            }
-        }
         let mut secret = Vec::new();
         File::open(external(&config.token_file)?)?
             .take(258)
@@ -338,173 +243,33 @@ impl Console {
                 "token must contain 32..256 ASCII graphic bytes",
             ));
         }
-        let extensions_config = config
-            .extensions_config
-            .as_ref()
-            .map(|path| {
-                ExtensionsConfig::load(external(path)?)
-                    .map_err(|e| ApiError::invalid(e.to_string()))
+        let mut control_paths = additional_protected.to_vec();
+        control_paths.push(config.token_file.clone());
+        control_paths.extend(config.ui_dir.iter().cloned());
+        let (application, simulation) =
+            crate::boot::application::open(crate::boot::application::ApplicationConfig {
+                data_dir: config.data_dir.clone(),
+                harness_config: config.harness_config.clone(),
+                extensions_config: config.extensions_config.clone(),
+                repair_config: config.repair_config.clone(),
+                monitors_config: config.monitors_config.clone(),
+                recovery_config: config.recovery_config.clone(),
+                control_paths,
             })
-            .transpose()?;
-        let loaded_repair = config
-            .repair_config
-            .as_ref()
-            .map(|path| load_repair_config(&external(path)?, true).map_err(ApiError::from))
-            .transpose()?;
-        if let (Some(recovery), Some((repair, _))) = (&recovery_config, &loaded_repair) {
-            if recovery.recovery.target.target_id == repair.target_id {
-                return Err(ApiError::invalid(
-                    "one target cannot use both recovery and legacy text authorities",
-                ));
-            }
-            let harness_path = external(&repair.harness_config)?;
-            if recovery_storage.iter().any(|storage| {
-                harness_path.starts_with(storage) || storage.starts_with(&harness_path)
-            }) {
-                return Err(ApiError::invalid(
-                    "recovery storage overlaps legacy Harness configuration",
-                ));
-            }
-        }
-        if let (Some(_), Some(extensions)) = (&recovery_config, &extensions_config) {
-            for path in extensions
-                .extensions
-                .iter()
-                .filter_map(|definition| definition.endpoint.ca_certificate.as_deref())
-            {
-                let path = external(path)?;
-                if recovery_storage
-                    .iter()
-                    .any(|storage| path.starts_with(storage) || storage.starts_with(&path))
-                {
-                    return Err(ApiError::invalid(
-                        "recovery storage overlaps a TLS trust file",
-                    ));
-                }
-            }
-        }
-        let harness_path = config
-            .harness_config
-            .as_ref()
-            .or_else(|| loaded_repair.as_ref().map(|(c, _)| &c.harness_config));
-        let harness_config = harness_path
-            .map(|path| {
-                load_harness_config(&external(path)?).map_err(|e| ApiError::invalid(e.to_string()))
-            })
-            .transpose()?;
-        let monitoring_config = config
-            .monitors_config
-            .as_ref()
-            .map(|path| {
-                MonitorsConfig::load(external(path)?)
-                    .map(|config| MonitoringHostConfig {
-                        config,
-                        data_dir: data.join("monitoring"),
-                    })
-                    .map_err(|error| ApiError::invalid(error.to_string()))
-            })
-            .transpose()?;
-        let mut host = HostRuntime::start(HostConfig {
-            harnesses: harness_config,
-            extensions: extensions_config,
-            monitoring: monitoring_config,
-        })
-        .await
-        .map_err(|e| ApiError::unavailable(e.to_string()))?;
-        let registry = host.harnesses();
-        let extensions = host.extensions();
-        let monitoring = host.monitoring();
-        let repair_config = loaded_repair.as_ref().map(|(c, _)| c.clone());
-        let setup = async {
-            let repair = if let Some((cfg, mut protected)) = loaded_repair {
-                if recovery_storage
-                    .iter()
-                    .any(|path| path.starts_with(&cfg.data_dir) || cfg.data_dir.starts_with(path))
-                {
-                    return Err(ApiError::invalid(
-                        "recovery and text repair storage must be separate",
-                    ));
-                }
-                protected.extend_from_slice(additional_protected);
-                protected.push(data.clone());
-                protected.push(config.token_file.clone());
-                if let Some(path) = &config.harness_config {
-                    protected.push(external(path)?);
-                }
-                if let Some(path) = &config.ui_dir {
-                    protected.push(path.clone());
-                }
-                if let Some(path) = &config.monitors_config {
-                    protected.push(path.clone());
-                }
-                if let Some(path) = &config.extensions_config {
-                    protected.push(path.clone());
-                }
-                if let Some(path) = &config.recovery_config {
-                    protected.push(path.clone());
-                }
-                protected.extend(recovery_storage.iter().cloned());
-                Some(RepairSession::open(cfg, registry.clone(), &protected)?)
-            } else {
-                None
-            };
-            let journal = Journal::open(&data)?;
-            let simulation = Engine::open(data.join("simulation"), EngineConfig::default())
-                .await
-                .map_err(|e| ApiError::unavailable(e.to_string()))?;
-            let recovery = if let Some(cfg) = recovery_config {
-                match host.start_recovery(cfg).await {
-                    Ok(recovery) => Some(recovery),
-                    Err(error) => {
-                        simulation
-                            .shutdown()
-                            .await
-                            .map_err(|e| ApiError::unavailable(e.to_string()))?;
-                        return Err(error.into());
-                    }
-                }
-            } else {
-                None
-            };
-            Ok::<_, ApiError>((repair, journal, simulation, recovery))
-        }
-        .await;
-        let (repair, journal, simulation, recovery) = match setup {
-            Ok(resources) => resources,
-            Err(error) => {
-                host.shutdown().await.map_err(|cleanup| {
-                    ApiError::unavailable(format!("{error}; cleanup: {cleanup}"))
-                })?;
-                return Err(error);
-            }
-        };
-        let handle = simulation.handle();
+            .await?;
         Ok((
             Arc::new(Self {
                 config,
                 assets,
-                host: tokio::sync::Mutex::new(host),
-                accepting: std::sync::atomic::AtomicBool::new(true),
                 secret,
-                registry,
-                extensions,
-                monitoring,
-                repair,
-                repair_config,
-                recovery,
-                recovery_executor,
-                simulation: handle,
-                journal: Mutex::new(journal),
-                calls: Mutex::new(BTreeMap::new()),
+                application,
                 log_cursors: Mutex::new(BTreeMap::new()),
             }),
             simulation,
         ))
     }
     fn require(&self, permission: &str) -> Result<(), ApiError> {
-        if !self.accepting.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(ApiError::unavailable("host is shutting down"));
-        }
+        self.application.ensure_accepting()?;
         if self.config.permissions.iter().any(|p| p == permission) {
             Ok(())
         } else {
@@ -516,8 +281,8 @@ impl Console {
         }
     }
     fn definition(&self, id: &str) -> Result<HarnessDefinition, ApiError> {
-        self.registry
-            .as_ref()
+        self.application
+            .harnesses()
             .and_then(|r| {
                 r.definitions()
                     .into_iter()
@@ -532,122 +297,11 @@ impl Console {
             .cloned()
             .ok_or_else(|| ApiError::invalid("workspace is not registered for this Harness"))
     }
-    fn begin(
-        &self,
-        id: String,
-        kind: &str,
-        context: Value,
-    ) -> Result<HarnessCancellation, ApiError> {
-        if !valid_id(&id) {
-            return Err(ApiError::invalid("invalid operation_id"));
-        }
-        let mut journal = lock(&self.journal)?;
-        if journal.records.contains_key(&id) {
-            return Err(ApiError::conflict(
-                "operation_id already accepted; query its result",
-            ));
-        }
-        if kind == "repair"
-            && context["taskId"].as_str().is_some_and(|task_id| {
-                journal.records.values().any(|operation| {
-                    operation.kind == "repair" && operation.context["taskId"] == task_id
-                })
-            })
-        {
-            return Err(ApiError::conflict(
-                "repair task_id already accepted; inspect its existing repair instead of replaying it",
-            ));
-        }
-        if journal.records.len() >= 1000 {
-            return Err(ApiError::unavailable("operation capacity reached"));
-        }
-        let mut calls = lock(&self.calls)?;
-        if !self.accepting.load(std::sync::atomic::Ordering::Acquire) {
-            return Err(ApiError::unavailable("host is shutting down"));
-        }
-        if calls.len() >= 8 {
-            return Err(ApiError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "capacity",
-                "too many active operations",
-            ));
-        }
-        let token = HarnessCancellation::new();
-        journal.append(Operation {
-            id: id.clone(),
-            kind: kind.into(),
-            status: "running".into(),
-            updated_at: timestamp(),
-            result: None,
-            error: None,
-            auto_retry: false,
-            context,
-        })?;
-        calls.insert(id, token.clone());
-        Ok(token)
-    }
-    fn finish(&self, id: &str, result: Result<Value, String>) {
-        if let Ok(mut journal) = lock(&self.journal)
-            && let Some(mut op) = journal.records.get(id).cloned()
-        {
-            match result {
-                Ok(value) => {
-                    op.status = match value.get("status").and_then(Value::as_str) {
-                        Some("unknown") => "unknown",
-                        Some("canceled") => "canceled",
-                        Some("failed") => "failed",
-                        _ => "completed",
-                    }
-                    .into();
-                    op.result = Some(value);
-                }
-                Err(message) => {
-                    op.status = "unknown".into();
-                    op.error = Some(message);
-                }
-            }
-            op.updated_at = timestamp();
-            if journal.append(op.clone()).is_err() {
-                op.status = "unknown".into();
-                op.result = None;
-                op.error = Some("completion could not be persisted; do not retry".into());
-                journal.records.insert(id.into(), op);
-            }
-        }
-        if let Ok(mut calls) = lock(&self.calls) {
-            calls.remove(id);
-        }
-    }
     pub async fn shutdown(&self) -> Result<(), ApiError> {
-        self.wait_for_idle().await;
-        self.host
-            .lock()
-            .await
-            .shutdown()
-            .await
-            .map_err(|error| ApiError::unavailable(error.to_string()))?;
-        if !lock(&self.calls)?.is_empty() {
-            return Err(ApiError::unavailable(
-                "operation receipts remain pending after shutdown",
-            ));
-        }
-        Ok(())
+        Ok(self.application.shutdown().await?)
     }
     pub async fn wait_for_idle(&self) {
-        self.accepting
-            .store(false, std::sync::atomic::Ordering::Release);
-        self.host.lock().await.begin_shutdown();
-        if let Ok(calls) = lock(&self.calls) {
-            for token in calls.values() {
-                token.cancel();
-            }
-        }
-        for _ in 0..400 {
-            if lock(&self.calls).is_ok_and(|c| c.is_empty()) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        self.application.wait_for_idle().await;
     }
 }
 

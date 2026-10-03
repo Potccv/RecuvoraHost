@@ -1,4 +1,5 @@
 use super::*;
+use crate::repair::{RepairConfig, RepairSession};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn call(
@@ -92,10 +93,11 @@ async fn large_history_is_bounded_and_cursor_survives_updates() {
     for index in 0..80 {
         let id = format!("operation-{index:03}");
         state
+            .application
             .begin(id.clone(), "repair", json!({"taskId":id}))
             .unwrap();
         if index != 5 {
-            state.finish(
+            state.application.finish(
                 &id,
                 Ok(json!({"status":"completed","final_response":text,"business_verified":false})),
             );
@@ -132,14 +134,17 @@ async fn large_history_is_bounded_and_cursor_survives_updates() {
         .map(|item| item["id"].as_str().unwrap().into())
         .collect();
     // A terminal update must not move an old record above the cursor and hide it.
-    state.finish(
+    state.application.finish(
         "operation-005",
         Ok(json!({"status":"completed","final_response":text})),
     );
     state
+        .application
         .begin("zzz-new".into(), "repair", json!({"taskId":"zzz-new"}))
         .unwrap();
-    state.finish("zzz-new", Ok(json!({"status":"completed"})));
+    state
+        .application
+        .finish("zzz-new", Ok(json!({"status":"completed"})));
     loop {
         let (status, page) = call(
             address,
@@ -274,6 +279,7 @@ async fn api_auth_permissions_receipts_and_restart() {
         403
     );
     state
+        .application
         .begin("interrupted".into(), "harness", json!({}))
         .unwrap();
     server.abort();
@@ -282,11 +288,12 @@ async fn api_auth_permissions_receipts_and_restart() {
     engine.shutdown().await.unwrap();
     let (state, engine) = Console::open(cfg).await.unwrap();
     assert_eq!(
-        lock(&state.journal).unwrap().records["interrupted"].status,
+        state.application.operations().unwrap().records()["interrupted"].status,
         "unknown"
     );
     assert!(
         state
+            .application
             .begin("interrupted".into(), "harness", json!({}))
             .is_err()
     );
@@ -578,7 +585,7 @@ async fn production_core_rejects_control_target_and_http_never_fabricates_approv
         assert_eq!(status, 503, "{body}");
         assert_eq!(body["auto_retry"], false);
     }
-    assert!(state.journal.lock().unwrap().records.is_empty());
+    assert!(state.application.operations().unwrap().records().is_empty());
     assert_eq!(std::fs::read_to_string(&target_file).unwrap(), "before");
     let store = ApprovalStore::open(
         &repair_config.data_dir,

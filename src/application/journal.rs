@@ -1,5 +1,5 @@
-//! Bounded transport receipts. Business authority remains in recovery services.
-use super::{ApiError, Operation, timestamp};
+//! Bounded application receipts. Business authority remains in recovery services.
+use super::{ApplicationError, Operation, timestamp};
 use fs2::FileExt;
 use std::{
     collections::BTreeMap,
@@ -13,7 +13,7 @@ const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OPERATIONS: usize = 1000;
 const MAX_EVENTS: usize = 8000;
 
-pub(super) struct Journal {
+pub(crate) struct Journal {
     file: File,
     pub records: BTreeMap<String, Operation>,
     pub events: Vec<Operation>,
@@ -22,7 +22,7 @@ pub(super) struct Journal {
 }
 
 impl Journal {
-    pub fn open(dir: &Path) -> Result<Self, ApiError> {
+    pub fn open(dir: &Path) -> Result<Self, ApplicationError> {
         let mut file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -31,7 +31,9 @@ impl Journal {
         file.try_lock_exclusive()?;
         let bytes = file.metadata()?.len();
         if bytes > MAX_JOURNAL_BYTES {
-            return Err(ApiError::unavailable("operation journal capacity exceeded"));
+            return Err(ApplicationError::unavailable(
+                "operation journal capacity exceeded",
+            ));
         }
         let mut records = BTreeMap::new();
         let mut events = Vec::new();
@@ -46,13 +48,13 @@ impl Journal {
                 break;
             }
             if line.len() > MAX_RECORD_BYTES || line.last() != Some(&b'\n') {
-                return Err(ApiError::unavailable(
+                return Err(ApplicationError::unavailable(
                     "operation journal contains an oversized or incomplete record",
                 ));
             }
             let raw: serde_json::Value = serde_json::from_slice(&line)?;
             let fields = raw.as_object().ok_or_else(|| {
-                ApiError::unavailable("operation journal record must be an object")
+                ApplicationError::unavailable("operation journal record must be an object")
             })?;
             let expected = [
                 "id",
@@ -67,7 +69,7 @@ impl Journal {
             if fields.len() != expected.len()
                 || expected.iter().any(|key| !fields.contains_key(*key))
             {
-                return Err(ApiError::unavailable(
+                return Err(ApplicationError::unavailable(
                     "operation journal record fields do not match this version",
                 ));
             }
@@ -76,7 +78,9 @@ impl Journal {
             if (!records.contains_key(&value.id) && records.len() >= MAX_OPERATIONS)
                 || events.len() >= MAX_EVENTS
             {
-                return Err(ApiError::unavailable("operation journal capacity exceeded"));
+                return Err(ApplicationError::unavailable(
+                    "operation journal capacity exceeded",
+                ));
             }
             records.insert(value.id.clone(), value.clone());
             events.push(value);
@@ -103,9 +107,11 @@ impl Journal {
         Ok(journal)
     }
 
-    pub fn append(&mut self, value: Operation) -> Result<(), ApiError> {
+    pub fn append(&mut self, value: Operation) -> Result<(), ApplicationError> {
         if self.failed {
-            return Err(ApiError::unavailable("operation journal unavailable"));
+            return Err(ApplicationError::unavailable(
+                "operation journal unavailable",
+            ));
         }
         validate_transition(self.records.get(&value.id), &value)?;
         let mut line = serde_json::to_vec(&value)?;
@@ -115,7 +121,9 @@ impl Journal {
             || self.events.len() >= MAX_EVENTS
             || (!self.records.contains_key(&value.id) && self.records.len() >= MAX_OPERATIONS)
         {
-            return Err(ApiError::unavailable("operation journal capacity exceeded"));
+            return Err(ApplicationError::unavailable(
+                "operation journal capacity exceeded",
+            ));
         }
         if let Err(error) = self
             .file
@@ -132,7 +140,10 @@ impl Journal {
     }
 }
 
-fn validate_transition(previous: Option<&Operation>, value: &Operation) -> Result<(), ApiError> {
+fn validate_transition(
+    previous: Option<&Operation>,
+    value: &Operation,
+) -> Result<(), ApplicationError> {
     if !super::valid_id(&value.id)
         || !super::valid_id(&value.kind)
         || !value.context.is_object()
@@ -143,30 +154,32 @@ fn validate_transition(previous: Option<&Operation>, value: &Operation) -> Resul
             "running" | "completed" | "failed" | "canceled" | "unknown"
         )
     {
-        return Err(ApiError::unavailable("invalid operation journal record"));
+        return Err(ApplicationError::unavailable(
+            "invalid operation journal record",
+        ));
     }
     if value.status == "running" {
         if previous.is_some() || value.result.is_some() || value.error.is_some() {
-            return Err(ApiError::unavailable(
+            return Err(ApplicationError::unavailable(
                 "operation journal cannot replay a call or attach a result before completion",
             ));
         }
     } else {
         let previous = previous.ok_or_else(|| {
-            ApiError::unavailable("operation journal completion has no accepted intent")
+            ApplicationError::unavailable("operation journal completion has no accepted intent")
         })?;
         if previous.status != "running"
             || previous.kind != value.kind
             || previous.context != value.context
         {
-            return Err(ApiError::unavailable(
+            return Err(ApplicationError::unavailable(
                 "operation journal changes identity or an already terminal outcome",
             ));
         }
         if (value.status != "unknown" && (value.result.is_none() || value.error.is_some()))
             || (value.status == "unknown" && value.result.is_none() && value.error.is_none())
         {
-            return Err(ApiError::unavailable(
+            return Err(ApplicationError::unavailable(
                 "operation journal outcome has no consistent result or error",
             ));
         }
@@ -183,7 +196,7 @@ fn validate_transition(previous: Option<&Operation>, value: &Operation) -> Resul
                 _ => "completed",
             };
             if value.status != expected {
-                return Err(ApiError::unavailable(
+                return Err(ApplicationError::unavailable(
                     "operation journal result disagrees with its terminal status",
                 ));
             }

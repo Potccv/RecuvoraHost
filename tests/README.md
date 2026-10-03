@@ -6,6 +6,7 @@
 | --- | --- |
 | Host 持久提交 | `persistence.rs` 验证提交版本与内容冲突、配置绑定、跨进程锁、恢复 Unknown、实际动作隔离与经验幂等 |
 | 开发检查工具 | `check_script.rs` 检查参数拒绝、Host/本地依赖源码保护、链接目录拒绝、失败停止、已有数据保留与调用方环境不变 |
+| 应用服务 | lib 中 `application.rs` 不经 HTTP 装配应用，验证关闭先取消、等待在途回执并拒绝新调用，以及重开 Unknown 和稳定 ID 不重放 |
 | 协议约定 | `protocol.rs` 检查固定 JSON 消息、Ready 缺省字段、ID、schema 必需/额外属性、Unicode 长度、值深度与数值边界 |
 | Host 持久化 | `persistence.rs` 检查 CAS、提交内容与配置绑定、独立进程排他写锁、尾记录损坏保留及审批/故障/知识恢复；lib 中 `persistence_faults.rs` 验证已同步但确认丢失时的 Unknown 与停止写入 |
 | 跨域中断 | lib 中 `recovery_commits.rs` 在原操作保存、审批创建、许可消费、恢复执行授权、审批执行完成、业务验收和知识持久化后退出独立子进程，重开真实 Host 日志核对原身份、无隐式重执行及经验交付去重 |

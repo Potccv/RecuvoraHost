@@ -173,13 +173,13 @@ async fn incident_api_paginates_evidence_and_acknowledges_with_authenticated_rev
     assert_eq!(ack_filtered["counts"]["open"], 30);
     assert_eq!(ack_filtered["counts"]["active"], 31);
     assert!(
-        state.journal.lock().unwrap().records.is_empty(),
+        state.application.operations().unwrap().records().is_empty(),
         "acknowledgement must not create a repair operation"
     );
 
     server.abort();
     let _ = server.await;
-    let retained_handle = state.monitoring.clone().unwrap();
+    let retained_handle = state.application.monitoring().cloned().unwrap();
     state.shutdown().await.unwrap();
     // Runtime shutdown releases the durable writer even with cloned service handles.
     let reopened = IncidentStore::open(&journal_path, IncidentStoreConfig::default()).unwrap();

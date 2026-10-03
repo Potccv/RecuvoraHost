@@ -89,7 +89,9 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
     };
     let (mut state, engine) = Console::open(cfg.clone()).await.unwrap();
     // Only trusted target metadata is supplied for the presentation helper; no repair session is created.
-    std::sync::Arc::get_mut(&mut state).unwrap().repair_config = Some(repair_config.clone());
+    std::sync::Arc::get_mut(&mut std::sync::Arc::get_mut(&mut state).unwrap().application)
+        .unwrap()
+        .set_text_repair_config_for_test(repair_config.clone());
     for (id, revision, status) in [
         (Some(source.id.as_str()), Some(source.revision + 1), 409),
         (Some(other.id.as_str()), Some(other.revision), 409),
@@ -110,7 +112,7 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
     assert_eq!(provenance["id"], source.id);
     assert_eq!(provenance["revision"], source.revision);
     assert!(provenance.get("evidence").is_none());
-    assert!(state.journal.lock().unwrap().records.is_empty());
+    assert!(state.application.operations().unwrap().records().is_empty());
 
     let listener = tokio::net::TcpListener::bind(cfg.listen).await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -124,12 +126,13 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
     assert_eq!(status, 503, "{body}");
     assert_eq!(body["auto_retry"], false);
     assert!(
-        state.journal.lock().unwrap().records.is_empty(),
+        state.application.operations().unwrap().records().is_empty(),
         "unconfigured repair persisted a dispatch"
     );
 
     // Exercise Host's durable receipt projection explicitly, without pretending a repair ran.
     state
+        .application
         .begin(
             "linked-operation".into(),
             "repair",
@@ -138,7 +141,7 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
             }),
         )
         .unwrap();
-    state.finish(
+    state.application.finish(
         "linked-operation",
         Ok(json!({"status":"failed", "message":"fixture has no repair session; no business execution"})),
     );
@@ -163,6 +166,7 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
     assert_eq!(reverse["related_repairs"]["items"][0]["id"], "linked-task");
     assert!(
         state
+            .application
             .begin(
                 "different-operation".into(),
                 "repair",
@@ -194,7 +198,9 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
     cfg.permissions
         .retain(|permission| permission != "incident.read");
     let (mut state, engine) = Console::open(cfg).await.unwrap();
-    std::sync::Arc::get_mut(&mut state).unwrap().repair_config = Some(repair_config.clone());
+    std::sync::Arc::get_mut(&mut std::sync::Arc::get_mut(&mut state).unwrap().application)
+        .unwrap()
+        .set_text_repair_config_for_test(repair_config.clone());
     let error =
         repair_source_incident(&state, Some(&source.id), Some(source.revision)).unwrap_err();
     assert_eq!(error.status.as_u16(), 403);

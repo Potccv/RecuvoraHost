@@ -1,6 +1,7 @@
 //! Trusted assembly and external configuration for approval-controlled repair.
-use super::host::{HostConfig, HostRuntime};
+use crate::application::HostRuntime;
 use crate::cli::repair::{self, Arguments};
+use crate::configuration::{self, HostConfig};
 use crate::harnesses::HarnessCancellation;
 use crate::persistence::approval::{
     ApprovalDecision, ApprovalStore, ApprovalStoreConfig, ReviewerConfig,
@@ -68,7 +69,7 @@ pub(super) async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 
 async fn execute(args: Arguments, token: HarnessCancellation) -> Result<Value, WorkflowError> {
     let needs_target = matches!(args.command.as_str(), "run" | "apply" | "check-result");
-    let (config, protected) = super::host::load_repair_config(&args.config, needs_target)?;
+    let (config, protected) = configuration::load_host_repair_config(&args.config, needs_target)?;
     // Inspection and decisions remain available even if a target was deleted,
     // became binary, or no longer satisfies execution preconditions.
     if matches!(
@@ -109,7 +110,7 @@ async fn execute(args: Arguments, token: HarnessCancellation) -> Result<Value, W
         return Ok(json!({"status":"ok","record":record,"executed":false}));
     }
     let mut host = if args.command == "run" {
-        let mut registry_config = super::host::load_harness_config(&config.harness_config)?;
+        let mut registry_config = configuration::load_host_harness_config(&config.harness_config)?;
         registry_config.validate()?;
         let mut ids = vec![config.execution_harness.clone()];
         if let ReviewerConfig::Harness { harness_id }
@@ -133,7 +134,7 @@ async fn execute(args: Arguments, token: HarnessCancellation) -> Result<Value, W
         let extensions = config
             .extensions_config
             .as_ref()
-            .map(|path| super::host::load_extensions_config(path))
+            .map(|path| configuration::load_extensions_config(path))
             .transpose()
             .map_err(|error| invalid(error.to_string()))?;
         Some(

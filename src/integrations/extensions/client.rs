@@ -25,16 +25,6 @@ pub trait CallbackHandler: Send + Sync {
 /// Validation runs after connection/identity checks, immediately before sending.
 /// Release must be idempotent and must not authorize another dispatch.
 pub trait DispatchGuard: Send + Sync {
-    /// Persist the concrete action within an already approved Harness session.
-    /// Ordinary dispatch guards cannot mint this additional capability.
-    fn prepare_repair_action(
-        &self,
-        _script: &recuvora_core::recovery::knowledge::RepairArtifact,
-    ) -> Result<(), ExtensionError> {
-        Err(ExtensionError::Rejected(
-            "Harness action preparation is not supported by this guard".into(),
-        ))
-    }
     fn validate(&self) -> Result<(), ExtensionError>;
     fn release(&self);
 }

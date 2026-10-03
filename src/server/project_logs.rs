@@ -206,7 +206,7 @@ pub(super) fn availability(state: &Console, id: &str) -> Result<(bool, Option<St
     {
         return Ok((false, None));
     }
-    let Some(handle) = &state.monitoring else {
+    let Some(handle) = state.application.monitoring() else {
         return Ok((false, None));
     };
     let Some(monitor) = handle
@@ -217,7 +217,7 @@ pub(super) fn availability(state: &Console, id: &str) -> Result<(bool, Option<St
     };
     let source = source_for(state, &monitor);
     let available = source.is_some_and(|source| {
-        state.extensions.as_ref().is_some_and(|registry| {
+        state.application.extensions().is_some_and(|registry| {
             registry
                 .statuses()
                 .iter()
@@ -474,7 +474,7 @@ pub(super) async fn logs(
             "log limit must be 1..32 and monitor ID must be valid",
         ));
     }
-    let handle = state.monitoring.as_ref().ok_or_else(|| {
+    let handle = state.application.monitoring().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "logs_unavailable",
@@ -492,7 +492,7 @@ pub(super) async fn logs(
             "no trusted log source is configured for this monitor",
         )
     })?;
-    let registry = state.extensions.as_ref().ok_or_else(|| {
+    let registry = state.application.extensions().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "logs_unavailable",

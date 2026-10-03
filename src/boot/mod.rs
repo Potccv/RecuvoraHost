@@ -1,4 +1,5 @@
 //! Application assembly for simulation, Harness text and approved text repair.
+pub mod application;
 mod harness_cli;
 pub mod host;
 mod repair_cli;

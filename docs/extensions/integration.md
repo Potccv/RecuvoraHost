@@ -5,7 +5,9 @@
 | 功能 | 当前实现 |
 | --- | --- |
 | v1 消息、ID、schema/value 校验 | `src/protocol/`；外部接入规范为 `docs/extensions/protocol.md` |
-| HostRuntime、启动/关闭顺序、配置与保护路径 | `src/boot/host.rs` |
+| HostRuntime 服务所有权与关闭顺序 | `src/application/host.rs` |
+| 共享服务和应用能力装配 | `src/boot/host.rs`、`src/boot/application.rs` |
+| 部署配置与保护路径 | `src/configuration/` |
 | endpoint、Bearer、TLS、HTTP/WebSocket 与协议会话 | `src/integrations/extensions/endpoint.rs`、`network.rs`、`transport.rs`、`client.rs` |
 | 扩展配置和运行调优 | `src/integrations/extensions/config.rs`、`protocol_settings.rs`、`node_settings.rs` |
 | ExtensionRegistry、声明校验、接口归属与路由 | `src/integrations/extensions/registry.rs`、`validation.rs`、`routing.rs` |
@@ -16,7 +18,8 @@
 | ExtensionRegistry 到 ObservationSource 的适配 | `src/integrations/monitoring/mod.rs` |
 | ExtensionRegistry/HarnessRegistry 到 RepairBackend 的适配与 Host 脚本解释 | `src/integrations/recovery/node_backend.rs`、`executor.rs`、`harness_repair.rs` |
 | Host 恢复服务配置、按配置启动及等待在途任务结束 | `src/configuration/recovery.rs`、`src/boot/host.rs` |
-| 监控故障绑定、IncidentGuard 与恢复流程调度 | `src/integrations/recovery/incident_guard.rs`、`scheduler.rs` |
+| 监控故障绑定、IncidentGuard 与恢复流程调度 | `src/recovery/incident_guard.rs`、`scheduler.rs` |
+| Core 聚合存储、能力注入与派发保护 | `src/recovery/aggregate.rs`、`platform.rs`、`dispatch.rs` |
 | Host 任务、审批、修复经验与根据节点证据核实结果的 HTTP 管理 | `src/server/recovery.rs` |
 | 插件 UI catalog、view 与页面刷新 HTTP 接口 | `src/server/http.rs`、`src/server/monitoring.rs`、`src/server/plugin_pages.rs` |
 

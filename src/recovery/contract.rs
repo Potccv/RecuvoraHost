@@ -4,14 +4,22 @@ use recuvora_core::recovery::approval;
 pub use recuvora_core::recovery::engine::{ReviewInput, ReviewOutput, VerificationInput};
 use std::{future::Future, pin::Pin};
 
+/// Recovery-specific authority to persist the concrete action inside an already
+/// approved Harness session. The generic network gate only validates and releases.
+pub trait RepairActionGuard: crate::integrations::extensions::DispatchGuard {
+    fn prepare_repair_action(
+        &self,
+        action: &recuvora_core::recovery::knowledge::RepairArtifact,
+    ) -> Result<(), crate::integrations::extensions::ExtensionError>;
+}
+
 /// Only the Host workflow adapter constructs this value after confirming the
 /// Core execution authorization. It cannot be cloned/deserialized and grants
 /// one dispatch to a trusted backend, subject to the final dispatch gate.
 pub struct AuthorizedRepair<'a> {
     pub(super) permit: &'a approval::ExecutionPermit,
     pub(super) timeout_secs: u64,
-    pub(super) dispatch_guard:
-        Option<std::sync::Arc<dyn crate::integrations::extensions::DispatchGuard>>,
+    pub(super) dispatch_guard: Option<std::sync::Arc<dyn RepairActionGuard>>,
 }
 impl AuthorizedRepair<'_> {
     pub fn operation(&self) -> &approval::ProposedOperation {
@@ -46,6 +54,12 @@ impl AuthorizedRepair<'_> {
     pub fn dispatch_guard(
         &self,
     ) -> Option<std::sync::Arc<dyn crate::integrations::extensions::DispatchGuard>> {
+        self.dispatch_guard.clone().map(|guard| guard as _)
+    }
+    /// Access action preparation separately from the generic network send gate.
+    /// Preparation persists the proposed action; it does not dispatch or grant
+    /// another execution permission.
+    pub fn repair_action_guard(&self) -> Option<std::sync::Arc<dyn RepairActionGuard>> {
         self.dispatch_guard.clone()
     }
 }

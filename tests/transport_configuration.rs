@@ -1,6 +1,6 @@
 //! Required network endpoints, rejected legacy commands and trust-file protection.
 mod workflow_support;
-use recuvora_host::boot::host::extension_protected_paths;
+use recuvora_host::configuration::extension_protected_paths;
 use recuvora_host::integrations::extensions::{
     ExtensionsConfig, NetworkEndpoint, NodeSettings, ProtocolSettings,
 };

@@ -23,8 +23,8 @@ pub(super) async fn projects(
         HarnessProjectListRequest::new(workspace)
     };
     let registry = state
-        .registry
-        .as_ref()
+        .application
+        .harnesses()
         .ok_or_else(|| ApiError::unavailable("Harness unavailable"))?;
     let result = registry
         .list_projects(Some(&id), request)
@@ -85,22 +85,12 @@ pub(super) async fn harness_run(
     if let Some(model) = input.model {
         request = request.with_model(model);
     }
-    let token = state.begin(
+    state.application.start_harness_run(
         input.operation_id.clone(),
-        "harness",
-        json!({"harnessId":id,"workspaceId":input.workspace_id}),
+        id,
+        request,
+        input.workspace_id,
     )?;
-    let op = input.operation_id.clone();
-    let registry = state
-        .registry
-        .clone()
-        .ok_or_else(|| ApiError::unavailable("Harness unavailable"))?;
-    tokio::spawn(async move {
-        let result = registry
-            .run(Some(&id), request.with_cancellation(token))
-            .await;
-        state.finish(&op,Ok(match result {Ok(r)=>json!({"status":"completed","harness_id":r.harness_id,"adapter":r.adapter,"address":r.address,"session_id":r.session_id,"thread_id":r.thread_id,"cwd":r.project_directory,"visibility":match r.visibility {ConversationVisibility::Hidden=>"hidden",ConversationVisibility::Client=>"client"},"final_response":r.final_response,"native_project_id":r.native_project_id,"client_project_grouping":crate::presentation::grouping_json(&r.client_project_grouping),"business_verified":false}),Err(e)=>crate::presentation::error_json(&e)}));
-    });
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"operation_id":input.operation_id,"auto_retry":false})),
@@ -121,8 +111,9 @@ pub(super) async fn repair_run(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     state.require("repair.run")?;
     let repair = state
-        .repair
-        .clone()
+        .application
+        .text_repair()
+        .cloned()
         .ok_or_else(|| ApiError::unavailable("repair is not configured"))?;
     if !valid_id(&input.task_id) || input.prompt.trim().is_empty() || input.prompt.len() > 8192 {
         return Err(ApiError::invalid("invalid repair task or prompt"));
@@ -141,22 +132,12 @@ pub(super) async fn repair_run(
         input.incident_id.as_deref(),
         input.incident_revision,
     )?;
-    let target = state.repair_config.as_ref().map(|config| &config.target_id);
-    let token = state.begin(
+    state.application.start_text_repair(
         input.operation_id.clone(),
-        "repair",
-        json!({"taskId":input.task_id,"target":target,"sourceIncident":source_incident}),
+        input.task_id,
+        input.prompt,
+        source_incident,
     )?;
-    let id = input.operation_id.clone();
-    tokio::spawn(async move {
-        let result = repair.run(input.task_id, input.prompt, token).await;
-        state.finish(
-            &id,
-            result
-                .map(|result| crate::presentation::repair_result_json(&result))
-                .map_err(|e| e.to_string()),
-        );
-    });
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"operation_id":input.operation_id,"auto_retry":false})),
@@ -181,33 +162,16 @@ pub(super) async fn approval(
     if input.reason.trim().is_empty() || input.reason.len() > 4096 {
         return Err(ApiError::invalid("bounded nonempty reason required"));
     }
-    let repair = state
-        .repair
-        .clone()
-        .ok_or_else(|| ApiError::unavailable("repair is not configured"))?;
-    let actor = state.config.operator.clone();
-    let record = tokio::task::spawn_blocking(move || match action.as_str() {
-        "approve" => repair.decide_authenticated(
-            &id,
+    let record = state
+        .application
+        .text_repair_decision(
+            id,
+            action,
             input.revision,
-            &actor,
-            ApprovalDecision::Approve,
+            state.config.operator.clone(),
             input.reason,
-        ),
-        "deny" => repair.decide_authenticated(
-            &id,
-            input.revision,
-            &actor,
-            ApprovalDecision::Deny,
-            input.reason,
-        ),
-        "revoke" => repair.revoke_authenticated(&id, input.revision, &actor, input.reason),
-        "apply" => repair.apply_versioned(&id, Some(input.revision), &HarnessCancellation::new()),
-        "check_result" => repair.check_result_authenticated(&id, Some(input.revision), &actor),
-        _ => Err(WorkflowError::Invalid("unknown approval action".into())),
-    })
-    .await
-    .map_err(|e| ApiError::unavailable(e.to_string()))??;
+        )
+        .await?;
     Ok(Json(
         json!({"record":record,"business_verified":false,"auto_retry":false}),
     ))
@@ -240,26 +204,13 @@ pub(super) async fn simulation(
     {
         return Err(ApiError::invalid("invalid simulation input"));
     }
-    let token = state.begin(
+    state.application.start_simulation(
         input.operation_id.clone(),
-        "simulation",
-        json!({"taskId":input.task_id,"target":input.target,"scenario":input.scenario}),
+        TaskSpec::simulated(&input.task_id, &input.target, sim)
+            .authorize_simulation()
+            .with_timeout(Duration::from_millis(input.timeout_ms)),
+        input.scenario,
     )?;
-    let id = input.operation_id.clone();
-    tokio::spawn(async move {
-        let engine = state.simulation.clone();
-        let result=async {
-            let mut snapshot=engine.submit(TaskSpec::simulated(&input.task_id,&input.target,sim).authorize_simulation().with_timeout(Duration::from_millis(input.timeout_ms))).await?;
-            while !snapshot.state.is_terminal() {
-                tokio::select! {
-                    _=token.cancelled()=> {if let Some(next)=engine.cancel(&input.task_id).await? {snapshot=next;}},
-                    _=tokio::time::sleep(Duration::from_millis(50))=> {if let Some(next)=engine.query(&input.task_id).await? {snapshot=next;}},
-                }
-            }
-            Ok::<_,crate::simulation::EngineError>(json!({"status":match snapshot.state {crate::simulation::TaskState::Unknown=>"unknown",crate::simulation::TaskState::Canceled=>"canceled",_=>"completed"},"task":snapshot}))
-        }.await;
-        state.finish(&id, result.map_err(|e| e.to_string()));
-    });
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"operation_id":input.operation_id,"auto_retry":false})),
@@ -269,8 +220,8 @@ pub(super) async fn operation(
     State(state): State<Arc<Console>>,
     RoutePath(id): RoutePath<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let journal = lock(&state.journal)?;
-    let op = journal.records.get(&id).ok_or_else(|| {
+    let journal = state.application.operations()?;
+    let op = journal.records().get(&id).ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -284,17 +235,10 @@ pub(super) async fn cancel(
     RoutePath(id): RoutePath<String>,
 ) -> Result<Json<Value>, ApiError> {
     state.require("operation.cancel")?;
-    let calls = lock(&state.calls)?;
-    if let Some(token) = calls.get(&id) {
-        token.cancel();
-        Ok(Json(
-            json!({"operation_id":id,"status":"cancel_requested","auto_retry":false}),
-        ))
-    } else {
-        Err(ApiError::conflict(
-            "operation is no longer active; query its recorded outcome",
-        ))
-    }
+    state.application.cancel(&id)?;
+    Ok(Json(
+        json!({"operation_id":id,"status":"cancel_requested","auto_retry":false}),
+    ))
 }
 #[derive(Default, Deserialize)]
 pub(super) struct LogsQuery {
@@ -311,16 +255,16 @@ pub(super) async fn logs(
     Query(query): Query<LogsQuery>,
 ) -> Result<Json<Value>, ApiError> {
     state.require("logs.read")?;
-    let journal = lock(&state.journal)?;
+    let journal = state.application.operations()?;
     let mut rows = Vec::new();
     let start = query
         .cursor
-        .unwrap_or(journal.events.len())
-        .min(journal.events.len());
+        .unwrap_or(journal.events().len())
+        .min(journal.events().len());
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let mut next = None;
     for index in (0..start).rev() {
-        let op = &journal.events[index];
+        let op = &journal.events()[index];
         let level = if op.status == "unknown" || op.status == "failed" {
             "error"
         } else {
@@ -364,8 +308,8 @@ pub(super) async fn extension_query(
 ) -> Result<Json<Value>, ApiError> {
     state.require("extension.read")?;
     let extensions = state
-        .extensions
-        .as_ref()
+        .application
+        .extensions()
         .ok_or_else(|| ApiError::unavailable("extensions not configured"))?;
     let result = extensions
         .call_read_only(

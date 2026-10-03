@@ -85,8 +85,8 @@ pub(super) struct ApprovalProjection {
 }
 fn records(state: &Console) -> Result<Vec<ApprovalProjection>, ApiError> {
     Ok(state
-        .repair
-        .as_ref()
+        .application
+        .text_repair()
         .map(|session| {
             session.records().map(|records| {
                 records
@@ -137,8 +137,8 @@ pub(super) fn approval_page(state: &Console, query: &ListQuery) -> Result<Value,
 
 pub(super) fn approval_detail(state: &Console, id: &str) -> Result<Value, ApiError> {
     let session = state
-        .repair
-        .as_ref()
+        .application
+        .text_repair()
         .ok_or_else(|| ApiError::unavailable("repair is not configured"))?;
     let mut value = views::approval(state, &session.record(id)?);
     value["detail"] = json!(true);
@@ -158,8 +158,10 @@ fn operation_summary(operation: &Operation) -> Value {
 
 pub(super) fn operation_page(state: &Console, query: &ListQuery) -> Result<Value, ApiError> {
     page(
-        lock(&state.journal)?
-            .records
+        state
+            .application
+            .operations()?
+            .records()
             .values()
             .map(operation_summary)
             .collect(),
@@ -170,11 +172,11 @@ pub(super) fn operation_page(state: &Console, query: &ListQuery) -> Result<Value
 
 pub(super) fn repair_page(state: &Console, query: &ListQuery) -> Result<Value, ApiError> {
     let records = records(state)?;
-    let journal = lock(&state.journal)?;
+    let journal = state.application.operations()?;
     page(
         repair_summaries(
             state,
-            &journal.records.values().collect::<Vec<_>>(),
+            &journal.records().values().collect::<Vec<_>>(),
             &records,
         ),
         "id",
@@ -184,17 +186,17 @@ pub(super) fn repair_page(state: &Console, query: &ListQuery) -> Result<Value, A
 
 pub(super) fn repair_detail(state: &Console, id: &str) -> Result<Value, ApiError> {
     let records = records(state)?;
-    let journal = lock(&state.journal)?;
+    let journal = state.application.operations()?;
     let mut view = repair_summaries(
         state,
-        &journal.records.values().collect::<Vec<_>>(),
+        &journal.records().values().collect::<Vec<_>>(),
         &records,
     )
     .into_iter()
     .find(|item| item["id"].as_str() == Some(id))
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "repair not found"))?;
     let operation = journal
-        .records
+        .records()
         .values()
         .filter(|op| op.kind == "repair" && op.context["taskId"].as_str() == Some(id))
         .max_by_key(|op| (op.updated_at, &op.id));
@@ -210,9 +212,9 @@ pub(super) fn repair_detail(state: &Console, id: &str) -> Result<Value, ApiError
 
 pub(super) fn incident_repairs(state: &Console, id: &str) -> Result<Value, ApiError> {
     let records = records(state)?;
-    let journal = lock(&state.journal)?;
+    let journal = state.application.operations()?;
     let tasks = journal
-        .records
+        .records()
         .values()
         .filter(|operation| {
             operation.kind == "repair" && operation.context["sourceIncident"]["id"] == id
@@ -221,7 +223,7 @@ pub(super) fn incident_repairs(state: &Console, id: &str) -> Result<Value, ApiEr
         .collect::<std::collections::BTreeSet<_>>();
     let mut items = repair_summaries(
         state,
-        &journal.records.values().collect::<Vec<_>>(),
+        &journal.records().values().collect::<Vec<_>>(),
         &records,
     );
     items.retain(|item| item["id"].as_str().is_some_and(|id| tasks.contains(id)));
@@ -232,8 +234,8 @@ pub(super) fn incident_repairs(state: &Console, id: &str) -> Result<Value, ApiEr
 }
 
 pub(super) fn simulation_page(state: &Console, query: &ListQuery) -> Result<Value, ApiError> {
-    let journal = lock(&state.journal)?;
-    let items = journal.records.values().filter(|op| op.kind == "simulation").map(|op| {
+    let journal = state.application.operations()?;
+    let items = journal.records().values().filter(|op| op.kind == "simulation").map(|op| {
         let task = op.result.as_ref().and_then(|result| result.get("task"));
         let state = task.and_then(|task| task["state"].as_str()).map(|name| match name {
             "TimedOut" => "timed_out".into(), other => other.to_ascii_lowercase()
@@ -257,7 +259,7 @@ pub(super) fn repair_summaries(
         if op.kind == "repair" {
             let task = op.context["taskId"].as_str().unwrap_or(&op.id);
             let result = op.result.as_ref().unwrap_or(&Value::Null);
-            repairs.insert(task.to_owned(),json!({"id":task,"target":op.context.get("target").cloned().unwrap_or_else(||json!(state.repair_config.as_ref().map(|c|&c.target_id))),
+            repairs.insert(task.to_owned(),json!({"id":task,"target":op.context.get("target").cloned().unwrap_or_else(||json!(state.application.text_repair_config().map(|c|&c.target_id))),
                 "status":if op.status=="unknown" {json!("unknown")} else {result.get("status").cloned().unwrap_or(json!(op.status))},"summary":"受限修复流程",
                 "operationCount":0,"reviewer":"可信审批服务","updatedAt":op.updated_at,
                 "harnessId":result["execution_context"]["harness_id"],

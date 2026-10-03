@@ -52,3 +52,23 @@ pub trait IncidentGuard: Send + Sync {
         readiness.ok_or_else(|| service("incident guard did not check current facts"))
     }
 }
+
+pub(super) fn incident(
+    problem: &ProblemContext,
+    current: IncidentReadiness,
+) -> Result<recuvora_core::recovery::workflow::IncidentEvidence, RecoveryError> {
+    match current {
+        IncidentReadiness::Active { revision } if revision >= problem.incident_revision => {
+            Ok(recuvora_core::recovery::workflow::IncidentEvidence {
+                incident_id: problem.incident_id.clone(),
+                revision,
+                active: true,
+            })
+        }
+        IncidentReadiness::Resolved { .. } => Err(RecoveryError::Invalid(
+            "incident resolved before dispatch".into(),
+        )),
+        IncidentReadiness::Unavailable { reason } => Err(service(reason)),
+        _ => Err(RecoveryError::Conflict),
+    }
+}

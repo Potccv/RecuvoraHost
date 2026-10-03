@@ -184,7 +184,9 @@ async fn recovery_http_uses_core_records_revisions_and_authenticated_actor() {
             .unwrap();
     }
     assert_eq!(task.stage, RecoveryStage::AwaitingApproval);
-    Arc::get_mut(&mut state).unwrap().recovery = Some(recovery.clone());
+    Arc::get_mut(&mut Arc::get_mut(&mut state).unwrap().application)
+        .unwrap()
+        .set_recovery_for_test(recovery.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(axum::serve(listener, router(state.clone())).into_future());

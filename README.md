@@ -2,7 +2,7 @@
 
 RecuvoraHost 是基于 Recuvora Core 的 Rust 应用宿主，提供命令行和认证 HTTP API，连接外部节点与插件，完成只读监控、故障管理和显式启用的恢复流程。项目以单 Cargo 包提供 `recuvora-host` 程序与 `recuvora_host` 库。
 
-Host 负责配置、认证、故障台账、服务装配、持久化、网络路由与调用监督；Core 主导审批、修复、验收和经验的完整恢复业务流程。节点负责目标采集、执行者监督与业务验收；UI 通过 `/api/v1` 使用服务，Host 可托管其外部 Web 构建资产。职责和生命周期见 [架构](docs/architecture.md)。
+Host 负责配置、认证、故障台账、服务装配、持久化、网络路由与调用监督；application 管理应用操作及生命周期，recovery 实现 Core 能力与聚合提交，integrations 提供外部后端。Core 主导审批、修复、验收和经验的完整恢复业务流程。节点负责目标采集、执行者监督与业务验收；UI 通过 `/api/v1` 使用服务，Host 可托管其外部 Web 构建资产。职责和生命周期见 [架构](docs/architecture.md)。
 
 ## 当前范围
 

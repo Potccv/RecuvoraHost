@@ -40,7 +40,7 @@ pub(super) async fn execute(
         operation: operation.clone(),
         request_id: authorized.request_id().into(),
         guard: authorized
-            .dispatch_guard()
+            .repair_action_guard()
             .ok_or_else(|| service("missing dispatch guard"))?,
         mutation: AtomicBool::new(false),
         receipt: Mutex::new(None),
@@ -101,7 +101,7 @@ struct RepairTools {
     diagnostics: InspectionTools,
     operation: approval::ProposedOperation,
     request_id: String,
-    guard: Arc<dyn crate::integrations::extensions::DispatchGuard>,
+    guard: Arc<dyn crate::recovery::RepairActionGuard>,
     mutation: AtomicBool,
     receipt: Mutex<Option<RepairReceipt>>,
     trace: Mutex<Vec<RepairArtifact>>,

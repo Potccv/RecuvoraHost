@@ -17,3 +17,5 @@ Host wire/schema 统一在本包 `src/protocol/`；监控、Harness 和修复的
 监督任务保留可信回调的 rejected/cancelled/unknown 分类；回调 Unknown 在顶层成功和取消收尾后仍然返回，不能重放。派发后的协议、连接和清理失败按 Unknown 处理，并等待可信回调结束后释放容量。Harness 保留方法按登记的输入/输出 schema 校验，有副作用结果不符保持 Unknown，详见[节点接口](../../../docs/extensions/nodes.md)。
 
 内部脚本执行路由必须携带可信 `DispatchGuard`。客户端在完成握手和身份核对后、发送顶层 Call 前重新验证故障、所有权、审批与知识条件；门一直持有到发送完成或失败，然后立即释放。派发前复核失败为拒绝且没有节点调用，发送失败保持 Unknown。所有提前退出和监督任务展开路径均释放门；该门不授予许可，也不延长审批或观察的有效时间。
+
+通用 DispatchGuard 仅定义 validate/release，不依赖恢复动作类型。恢复会话通过 [RepairActionGuard](../../recovery/contract.rs) 先持久准备具体动作，再把发送门交给本目录；动作准备不属于协议客户端的职责。

@@ -16,8 +16,8 @@ pub(super) async fn refresh(
         return Err(ApiError::invalid("invalid plugin identity"));
     }
     let registry = state
-        .extensions
-        .as_ref()
+        .application
+        .extensions()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "plugin not found"))?;
     if !registry
         .definitions()

@@ -15,11 +15,11 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
     let operations = history::operation_page(state, &history::ListQuery::default())?;
     let simulations = history::simulation_page(state, &history::ListQuery::default())?;
     let extension_statuses = state
-        .extensions
-        .as_ref()
+        .application
+        .extensions()
         .map(|registry| registry.statuses())
         .unwrap_or_default();
-    let harnesses=state.registry.as_ref().map(|registry|registry.definitions().iter().map(|h| {
+    let harnesses=state.application.harnesses().map(|registry|registry.definitions().iter().map(|h| {
         let node_status=h.address.strip_prefix("node://").and_then(|id|extension_statuses.iter().find(|status|status.id==id));
         json!({
         "id":h.id,"adapter":h.adapter,"address":h.address,"enabled":h.enabled,"isDefault":registry.default_harness()==Some(&h.id),
@@ -39,21 +39,21 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
         capability(
             "monitoring",
             "监控与故障",
-            state.monitoring.is_some(),
+            state.application.monitoring().is_some(),
             vec!["monitor.read", "incident.read", "incident.acknowledge"],
             "按规则检查异常和采集完整性，保存故障记录；确认收到不解除故障，监控本身不自动执行修复。",
         ),
         capability(
             "harness",
             "AI 会话",
-            state.registry.is_some(),
+            state.application.harnesses().is_some(),
             vec!["harness.run", "harness.projects"],
             "AI 服务提供方是否已登录，以调用结果为准；会话在客户端中的项目分组需另行确认。",
         ),
         capability(
             "text-repair",
             "审批与文本修复",
-            state.repair.is_some(),
+            state.application.text_repair().is_some(),
             vec![
                 "repair.run",
                 "approval.decide",
@@ -65,7 +65,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
         capability(
             "recovery",
             "自动恢复流程",
-            state.recovery.is_some(),
+            state.application.recovery().is_some(),
             vec![
                 "recovery.read",
                 "recovery.decide",
@@ -97,7 +97,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
             "只调用已登记且获准的接口与方法；登记插件不授予修改目标的权限。",
         ),
     ];
-    let active=state.repair_config.as_ref().map(|c|json!({"name":"当前服务配置","repairConfig":state.config.repair_config,"harnessConfig":c.harness_config,
+    let active=state.application.text_repair_config().map(|c|json!({"name":"当前服务配置","repairConfig":state.config.repair_config,"harnessConfig":c.harness_config,
         "targetId":c.target_id,"targetRoot":c.target_root,"reviewerDirectory":c.reviewer_directory,"dataDirectory":c.data_dir,"allowedFiles":c.allowed_files,
         "executionHarness":c.execution_harness,"executionWorkspace":c.execution_workspace,"reviewerWorkspace":c.reviewer_workspace,
         "reviewer":reviewer(&c.policy.reviewer),"delegation":c.policy.delegation,"policyId":c.policy.id,"policyVersion":c.policy.version,

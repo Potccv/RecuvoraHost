@@ -1,23 +1,21 @@
 //! Authenticated management of Host recovery facts; the scheduler owns dispatch.
 use super::*;
-use crate::integrations::recovery::{NodeRepairBackend, RecoveryTask};
+use crate::recovery::RecoveryTask;
 use recuvora_core::recovery::knowledge::KnowledgeQuery;
 
 pub(super) async fn status(State(state): State<Arc<Console>>) -> Result<Json<Value>, ApiError> {
     state.require("recovery.read")?;
-    let host = state.host.lock().await;
-    let scheduler = host
-        .recovery_scheduler()
-        .ok_or_else(|| ApiError::unavailable("recovery service is not configured"))?;
+    let (running, last_error) = state.application.recovery_status().await?;
     Ok(Json(
-        json!({"running":scheduler.is_running(),"last_error":scheduler.last_error()?,"auto_retry":false}),
+        json!({"running":running,"last_error":last_error,"auto_retry":false}),
     ))
 }
 
 fn service(state: &Console) -> Result<Arc<RecoveryService>, ApiError> {
     state
-        .recovery
-        .clone()
+        .application
+        .recovery()
+        .cloned()
         .ok_or_else(|| ApiError::unavailable("recovery service is not configured"))
 }
 
@@ -28,7 +26,7 @@ fn task_view(task: &RecoveryTask) -> Result<Value, ApiError> {
 fn existing(
     recovery: &RecoveryService,
     id: &str,
-) -> Result<crate::integrations::recovery::RecoveryTask, ApiError> {
+) -> Result<crate::recovery::RecoveryTask, ApiError> {
     if !valid_id(id) {
         return Err(ApiError::invalid("invalid recovery task ID"));
     }
@@ -146,53 +144,13 @@ pub(super) async fn check_result(
     state.require("recovery.read")?;
     state.require("recovery.check_result")?;
     let recovery = service(&state)?;
-    let task = existing(&recovery, &id)?;
-    if task.revision != input.revision
-        || task.stage != crate::integrations::recovery::RecoveryStage::Unknown
-    {
-        return Err(ApiError::conflict(
-            "result checking requires the current Unknown task revision",
-        ));
-    }
-    let backend = NodeRepairBackend::new(
-        state
-            .registry
-            .clone()
-            .ok_or_else(|| ApiError::unavailable("Harness unavailable"))?,
-        state
-            .extensions
-            .clone()
-            .ok_or_else(|| ApiError::unavailable("extension service unavailable"))?,
-        state
-            .recovery_executor
-            .clone()
-            .ok_or_else(|| ApiError::unavailable("recovery executor unavailable"))?,
-    )?;
-    let cancellation = state.begin(
+    existing(&recovery, &id)?;
+    state.application.start_recovery_result_check(
         input.operation_id.clone(),
-        "recovery_check_result",
-        json!({"taskId":id,"revision":input.revision}),
+        id,
+        input.revision,
+        state.config.operator.clone(),
     )?;
-    let operation_id = input.operation_id.clone();
-    tokio::spawn(async move {
-        let result = backend
-            .check_task_result(
-                &recovery,
-                &id,
-                input.revision,
-                state.config.operator.clone(),
-                cancellation,
-            )
-            .await;
-        state.finish(
-            &operation_id,
-            result.map_err(|error| error.to_string()).and_then(|task| {
-                task_view(&task)
-                    .map(|task| json!({"task":task,"auto_retry":false}))
-                    .map_err(|error| error.to_string())
-            }),
-        );
-    });
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"operation_id":input.operation_id,"auto_retry":false})),

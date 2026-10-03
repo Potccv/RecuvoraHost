@@ -1,11 +1,11 @@
 //! Host gate binding authoritative monitor facts to recovery dispatch.
 use super::IncidentTrigger;
 use crate::control::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
-use crate::integrations::recovery::{
+use crate::monitoring::{MonitorHandle, MonitorIncidentLease};
+use crate::recovery::{
     IncidentDispatchLease, IncidentGuard, IncidentReadiness, ProblemContext, RecoveryError,
     RecoveryFuture,
 };
-use crate::monitoring::{MonitorHandle, MonitorIncidentLease};
 use std::collections::BTreeSet;
 
 /// Supplies control workflow evidence under Host's atomic, fresh monitor gate.

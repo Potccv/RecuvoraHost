@@ -1,6 +1,7 @@
 //! Trusted provider assembly. User input and output stay in `cli`.
-use super::host::{HostConfig, HostError, HostRuntime};
+use crate::application::{HostError, HostRuntime};
 use crate::cli::{self, HarnessCommand};
+use crate::configuration::{self, HostConfig};
 use crate::harnesses::{
     HarnessCancellation, HarnessDefinition, HarnessError, HarnessRegistry, HarnessRegistryBuilder,
     HarnessRegistryConfig,
@@ -31,12 +32,12 @@ pub(super) async fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let config = match super::host::load_harness_config(&args.config) {
+    let config = match configuration::load_host_harness_config(&args.config) {
         Ok(config) => config,
         Err(error) => return report_error(&error),
     };
     let extensions = if let Some(path) = &args.extensions {
-        match super::host::load_extensions_config(path) {
+        match configuration::load_extensions_config(path) {
             Ok(config) => Some(config),
             Err(error) => {
                 return report_error(&HarnessError::InvalidConfiguration(error.to_string()));

@@ -5,7 +5,7 @@ use recuvora_core::recovery::{
     approval::{ApprovalPolicy, ApprovalState, ModelAssessment, ReviewerConfig, ReviewerIdentity},
     knowledge::{ExperienceReport, RepairArtifact, Scriptability},
 };
-use std::{collections::BTreeMap, io::Write};
+use std::{collections::BTreeMap, io::Write, time::Duration};
 
 struct Clock;
 impl RecoveryClock for Clock {
@@ -102,7 +102,9 @@ impl RepairBackend for Backend {
         _: Cancellation,
     ) -> RecoveryFuture<'a, RepairReceipt> {
         Box::pin(async move {
-            let guard = script.dispatch_guard().expect("Host dispatch gate");
+            let guard = script
+                .repair_action_guard()
+                .expect("Host repair action gate");
             let action = RepairArtifact {
                 id: format!("{}-action", script.operation().operation_id),
                 version: 1,
@@ -271,7 +273,7 @@ async fn assert_boundary(boundary: &str) {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "integrations::recovery::service::commit_tests::crash_probe",
+            "recovery::service::commit_tests::crash_probe",
             "--nocapture",
         ])
         .env("RECUVORA_RECOVERY_CRASH_BOUNDARY", boundary)
@@ -423,7 +425,7 @@ async fn crash_existing(directory: &Path, boundary: &str) {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "integrations::recovery::service::commit_tests::crash_probe",
+            "recovery::service::commit_tests::crash_probe",
             "--nocapture",
         ])
         .env("RECUVORA_RECOVERY_CRASH_BOUNDARY", boundary)

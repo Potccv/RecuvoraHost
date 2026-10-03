@@ -1,8 +1,8 @@
 //! Host storage, scheduling and control configuration.
-use crate::integrations::recovery::IncidentTrigger;
-use crate::integrations::recovery::{CanonicalTarget, RecoveryConfig, RecoveryError};
 use crate::persistence::approval::ApprovalStoreConfig;
 use crate::persistence::knowledge::KnowledgeStoreConfig;
+use crate::recovery::IncidentTrigger;
+use crate::recovery::{CanonicalTarget, RecoveryConfig, RecoveryError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -58,8 +58,8 @@ impl RecoveryHostConfig {
     }
 
     pub(crate) fn storage_paths(&self) -> Result<[PathBuf; 2], RecoveryError> {
-        let data = crate::boot::host::external_path(&self.data_dir)?;
-        let ownership = crate::boot::host::external_path(&self.ownership_dir)?;
+        let data = super::external_path(&self.data_dir)?;
+        let ownership = super::external_path(&self.ownership_dir)?;
         if data.starts_with(&ownership) || ownership.starts_with(&data) {
             return Err(RecoveryError::Invalid(
                 "recovery storage and shared target ownership must be separate".into(),
@@ -71,7 +71,7 @@ impl RecoveryHostConfig {
     /// Reads trusted settings without opening a store or dispatching work.
     pub fn load(path: &Path) -> Result<Self, RecoveryError> {
         use std::io::Read;
-        let path = crate::boot::host::external_path(path)?.canonicalize()?;
+        let path = super::external_path(path)?.canonicalize()?;
         let file = std::fs::File::open(&path)?;
         if !file.metadata()?.is_file() {
             return Err(RecoveryError::Invalid(
