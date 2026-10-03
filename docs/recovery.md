@@ -1,24 +1,24 @@
 # 自动恢复流程
 
-恢复流程将故障经验匹配、受授权的 Harness 修复、独立业务验收和经验总结串联起来。Host 的 `RecoveryService` 提供接口，`RecoveryScheduler` 安排处理顺序；Core 负责领域判定，Host 持久保存已确认历史。执行结果与总结交付分别记录，总结失败不能触发再次修复。
+恢复流程将故障经验匹配、受授权的 Harness 修复、独立业务验收和经验总结串联起来。Host 的 `RecoveryService` 提供接口，`RecoveryScheduler` 安排处理顺序；Host control 负责授权和状态判定，persistence 与恢复服务持久保存历史；Core 提供业务计算。执行结果与总结交付分别记录，总结失败不能触发再次修复。
 
 ## 如何启用
 
 服务配置显式填写 `recovery_config`，同时提供 Harness、扩展和监控配置。完整组合见 [服务模板](../profiles/server.recovery.example.json)，恢复配置见 [流程模板](../profiles/repair.recovery.example.json)。普通 Host 启动或插件接口登记不会自动派发修复。
 
-`RecoveryHostConfig.schema_version` 和内层 `recovery.schema_version` 都为 2。Host 配置包含 `data_dir`、必填共享 `ownership_dir`、`executor`、故障触发规则、调度间隔和存储限额。`executor` 管理具体脚本平台、语言及只读检查查询；Core 只保存逻辑身份、目标事实和允许的动作种类。详细字段见[配置说明](configuration.md#恢复流程配置)。
+`RecoveryHostConfig.schema_version` 和内层 `recovery.schema_version` 都为 2。Host 配置包含 `data_dir`、必填共享 `ownership_dir`、`executor`、故障触发规则、调度间隔和存储限额。`executor` 管理具体脚本平台、语言及只读检查查询；Host control 保存逻辑身份、目标事实和允许的动作种类。详细字段见[配置说明](configuration.md#恢复流程配置)。
 
 启动调度前，Host 为规范目标绑定 `FileTargetOwnership`。保护同一目标的所有恢复存储必须使用同一稳定所有权目录；未完成任务与 Unknown 在关闭或进程退出后仍保留持久所有者，只有原存储可继续恢复。全部终结且无未知执行审批后，Host 才释放所有权。低层 `open_recovery(data_dir, config, executor)` 不启动调度；嵌入方须绑定 `TargetOwnership`、`IncidentGuard` 并负责关闭。
 
 ## 统一修复与经验总结
 
-`recovery.approval.allowed_action_kinds` 显式允许 `repair_with_harness`。Core 的 `StartRepair` 生成包含故障、当前观察、最多四条相关经验和可信委托的统一请求；`matched_experience_count` 记录本次查询的全部匹配数，`experiences` 只包含在请求预算内实际附带的经验，因此不能用空列表判断是否命中经验。命中经验与未命中经验使用同一 Harness 会话。知识读取失败不能降级为空经验，参考经验也不能生成权限。
+`recovery.approval.allowed_action_kinds` 显式允许 `repair_with_harness`。Host control 的 `StartRepair` 调用 Core `prepare_repair` 生成包含故障、当前观察、最多四条相关经验和可信委托的统一请求；`matched_experience_count` 记录本次查询的全部匹配数，`experiences` 只包含在请求预算内实际附带的经验，因此不能用空列表判断是否命中经验。命中经验与未命中经验使用同一 Harness 会话。知识读取失败不能降级为空经验，参考经验也不能生成权限。
 
 审核按 `human`、`harness` 或 `human_then_harness` 规则进行。批准绑定完整会话操作、当前政策、目标与期限；批准后仍复核当前故障、目标条件与一次许可。已提交的许可消费和操作身份不能在重启后重建成新的派发权。
 
-`NodeRepairBackend` 只提供 `inspect_target` 和 `apply_repair` 两个 Host 工具，不开放提供方原生 shell、文件或网络工具。`apply_repair` 在固定目标与 `executor` 配置范围内最多派发一次变更，调用节点的 `execute_script`。Core 的 `recovery.target.allowed_action_kinds` 限定具体动作，当前 Host 适配器只支持 `execute_script`。
+`NodeRepairBackend` 只提供 `inspect_target` 和 `apply_repair` 两个 Host 工具，不开放提供方原生 shell、文件或网络工具。`apply_repair` 在固定目标与 `executor` 配置范围内最多派发一次变更，调用节点的 `execute_script`。Host control 的 `recovery.target.allowed_action_kinds` 限定具体动作，当前 Host 适配器只支持 `execute_script`。
 
-Host 校验脚本后封装为 `RepairArtifact { id, version, kind, payload, preconditions, generated_by_harness, generated_in_session }`。Core 不解析脚本语言或平台；它校验中立产物、可信会话归属、允许种类、精确前提和隔离。具体动作先通过 `RepairActionPrepared` 持久保存，再在实际发送前复核故障、政策、所有权和知识门。第二次变更被拒绝，失败或断连不会自动重试。
+Host 校验脚本后封装为 `RepairArtifact { id, version, kind, payload, preconditions, generated_by_harness, generated_in_session }`。Core 不解析脚本语言或平台；Host control 校验中立产物、可信会话归属、允许种类、精确前提和隔离。具体动作先通过 `RepairActionPrepared` 持久保存，再在实际发送前复核故障、政策、所有权和知识门。第二次变更被拒绝，失败或断连不会自动重试。
 
 Host 从节点取得执行回执，模型最终文本不能声明执行成功。`execution_trace` 保存实际中立动作；独立 `verify` 决定业务结果。Unknown 保留原操作和实际动作隔离，`reconcile` 始终查询同一 operation_id。执行结束后的模型回答失败不能覆盖已取得的独立执行回执。
 
@@ -46,10 +46,12 @@ Host 从节点取得执行回执，模型最终文本不能声明执行成功。
 
 核实未知结果还需要节点声明只读 `reconcile` 并在 Host 配置中允许调用。请求为 `{"target_id":"target","operation_id":"operation-id"}`；响应包含 operation_id、target_id、executor_id、outcome（executed/failed/not_executed/unknown）、executor_stopped、evidence_refs 和 age_ms。
 
-Host 查询原操作执行结果，再独立 verify，将执行证据与业务验收交给 `RecoveryService::check_result`。HTTP `result_check` 保存核实记录，`checked_at_ms` 根据证据年龄和调用耗时计算；Core 校验时效、任务 revision 和身份。客户端不能提交 outcome、停止状态、证据或 actor。方法不支持、证据过期或身份不符则核实失败，不重做动作；目标健康不能证明原操作曾执行。
+Host 查询原操作执行结果，再独立 verify，将执行证据与业务验收交给 `RecoveryService::check_result`。HTTP `result_check` 保存核实记录，`checked_at_ms` 根据证据年龄和调用耗时计算；Host control 校验时效、任务 revision 和身份。客户端不能提交 outcome、停止状态、证据或 actor。方法不支持、证据过期或身份不符则核实失败，不重做动作；目标健康不能证明原操作曾执行。
 
 ## 接口与限制
 
 HTTP 路径、权限和 revision 见 [HTTP API](api/http.md)，审核规则见 [审批](approval.md)。没有独立恢复管理 CLI；`serve --config` 根据配置启动，Rust 嵌入者也可使用 `HostRuntime`。
 
 每个 HostRuntime 管理一个固定目标。恢复入口不接受任意脚本上传、任意 shell、自动节点安装或配置热更新。独立文本修复与模拟服务继续由各自入口提供。Unknown 阻止同目标冲突任务；隔离协议替身不能替代真实节点、进程监督或业务恢复验收。
+
+完整阶段与跨日志顺序见[恢复控制参考](control/recovery.md)与[提交约束](control/commits.md)。

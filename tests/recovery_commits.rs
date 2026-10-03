@@ -1,10 +1,10 @@
 //! Actual process exits between Host journals; no destructor completes a commit.
 use super::*;
-use crate::workflow_test_support::TestDir;
-use recuvora_core::recovery::{
+use crate::control::recovery::{
     approval::{ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity},
     knowledge::{ExperienceReport, RepairArtifact, Scriptability},
 };
+use crate::workflow_test_support::TestDir;
 use std::{collections::BTreeMap, io::Write};
 
 struct Clock;
@@ -52,7 +52,7 @@ impl Backend {
 impl RepairBackend for Backend {
     fn summarize(
         &self,
-        _: recuvora_core::recovery::workflow::ExperienceJob,
+        _: crate::control::recovery::workflow::ExperienceJob,
         _: RecoveryConfig,
         _: Cancellation,
     ) -> RecoveryFuture<'_, ExperienceReport> {
@@ -409,7 +409,7 @@ async fn assert_boundary(boundary: &str) {
                 }
             );
             if boundary == "approval_completed" {
-                use recuvora_core::recovery::knowledge::RepairOutcome;
+                use crate::control::recovery::knowledge::RepairOutcome;
                 assert!(
                     knowledge
                         .experiences

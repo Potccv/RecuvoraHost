@@ -1,12 +1,6 @@
-//! Host persistence and effect dispatch around the Core 0.2 recovery reducer.
+//! Host persistence and effect dispatch around the control recovery reducer.
 use super::*;
-use crate::persistence::{
-    approval::{ApprovalStore, ApprovalStoreConfig},
-    journal::Journal,
-    knowledge::{KnowledgeStore, KnowledgeStoreConfig},
-};
-use crate::runtime::operation::{CallScope, Cancellation};
-use recuvora_core::recovery::{
+use crate::control::recovery::{
     approval::{
         self, ApprovalDecision, ApprovalRecord, ApprovalState, ExecutionOutcome, ReviewStage,
     },
@@ -16,6 +10,12 @@ use recuvora_core::recovery::{
         RecoveryState, TargetAuthority,
     },
 };
+use crate::persistence::{
+    approval::{ApprovalStore, ApprovalStoreConfig},
+    journal::Journal,
+    knowledge::{KnowledgeStore, KnowledgeStoreConfig},
+};
+use crate::runtime::operation::{CallScope, Cancellation};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -55,7 +55,7 @@ impl State {
             dispatching,
         };
         let payload = serde_json::to_value(record)?;
-        let request = recuvora_core::operation::CommitRequest::new(
+        let request = crate::control::operation::CommitRequest::new(
             self.dispatch.next_id(),
             self.dispatch.revision(),
             "dispatch".into(),
@@ -302,7 +302,7 @@ impl State {
     }
 }
 
-/// Owns protected storage, trusted ports and supervised calls; Core owns transitions.
+/// Owns protected storage, trusted ports and supervised calls; control owns transitions.
 pub struct RecoveryService {
     config: RecoveryConfig,
     backend: Arc<dyn RepairBackend>,
@@ -580,7 +580,7 @@ impl RecoveryService {
     pub fn experiences(
         &self,
         query: &KnowledgeQuery,
-    ) -> Result<Vec<recuvora_core::recovery::knowledge::RepairExperience>, RecoveryError> {
+    ) -> Result<Vec<crate::control::recovery::knowledge::RepairExperience>, RecoveryError> {
         self.read_state(|s| {
             s.knowledge
                 .state()
@@ -794,7 +794,7 @@ impl RecoveryService {
     }
     pub fn pending_experiences(
         &self,
-    ) -> Result<Vec<recuvora_core::recovery::workflow::ExperienceJob>, RecoveryError> {
+    ) -> Result<Vec<crate::control::recovery::workflow::ExperienceJob>, RecoveryError> {
         self.read_state(|s| Ok(s.workflow.pending_experiences()))
     }
     async fn run(
@@ -1348,7 +1348,7 @@ struct ExecutionDispatch {
 impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
     fn prepare_repair_action(
         &self,
-        action: &recuvora_core::recovery::knowledge::RepairArtifact,
+        action: &crate::control::recovery::knowledge::RepairArtifact,
     ) -> Result<(), crate::integrations::extensions::ExtensionError> {
         use crate::integrations::extensions::ExtensionError;
         self.validate()?;

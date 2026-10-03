@@ -40,7 +40,7 @@ pub enum HostError {
     Lifecycle(String),
 }
 
-/// Starts shared application services and connects external adapters to Core.
+/// Starts shared services and connects external adapters to Host control.
 pub struct HostRuntime {
     harnesses: Option<Arc<HarnessRegistry>>,
     extensions: Option<Arc<ExtensionRegistry>>,
@@ -307,8 +307,8 @@ pub fn extension_protected_paths(
     Ok(protected)
 }
 
-/// Add the application source boundary before Core can create durable state.
-/// Host prepares paths and protection; Core retains policy and approval authority.
+/// Add the application source boundary before creating durable state.
+/// Host prepares paths and protection; control retains policy and approval authority.
 pub fn load_repair_config(
     path: &Path,
     needs_target: bool,
@@ -331,7 +331,7 @@ pub fn load_repair_config(
     if needs_target
         && matches!(
             &config.policy.reviewer,
-            recuvora_core::recovery::approval::ReviewerConfig::HumanThenHarness { .. }
+            crate::control::recovery::approval::ReviewerConfig::HumanThenHarness { .. }
         )
     {
         return Err(WorkflowError::Invalid(
@@ -394,7 +394,7 @@ pub(super) fn prepare_runtime_directory(path: &Path) -> io::Result<PathBuf> {
     validate_simulation_paths(&path)
 }
 
-/// Core's simulation storage is embedded here, so the application validates
+/// Simulation storage is embedded here, so the application validates
 /// existing journal/lock leaves as well as the directory before opening them.
 pub(crate) fn validate_simulation_paths(path: &Path) -> io::Result<PathBuf> {
     let path = external_path(path)?;

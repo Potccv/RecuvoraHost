@@ -1,5 +1,5 @@
 use super::journal::Journal;
-pub use recuvora_core::recovery::incidents::*;
+pub use crate::control::recovery::incidents::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -152,9 +152,9 @@ pub enum IncidentError {
     Unavailable(String),
 }
 
-impl From<recuvora_core::recovery::incidents::IncidentError> for IncidentError {
-    fn from(error: recuvora_core::recovery::incidents::IncidentError) -> Self {
-        use recuvora_core::recovery::incidents::IncidentError as E;
+impl From<crate::control::recovery::incidents::IncidentError> for IncidentError {
+    fn from(error: crate::control::recovery::incidents::IncidentError) -> Self {
+        use crate::control::recovery::incidents::IncidentError as E;
         match error {
             E::Invalid(value) => Self::Invalid(value),
             E::Conflict(value) => Self::Conflict(value),
@@ -178,8 +178,8 @@ impl From<super::journal::JournalError> for IncidentError {
         }
     }
 }
-impl From<recuvora_core::operation::CommitError> for IncidentError {
-    fn from(error: recuvora_core::operation::CommitError) -> Self {
+impl From<crate::control::operation::CommitError> for IncidentError {
+    fn from(error: crate::control::operation::CommitError) -> Self {
         Self::Corrupt(error.to_string())
     }
 }

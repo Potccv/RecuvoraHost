@@ -49,9 +49,9 @@ ui_dir为空时页面路由返回404。配置后启动加载固定14份官方静
 | `GET /incidents`、`/incidents/{id}` | 故障摘要与完整证据；要求incident.read |
 | `POST /incidents/{id}/acknowledge` | revision、note；要求incident.read与incident.acknowledge |
 | `GET /recovery/status` | 恢复流程调度器的 running 与 last_error；要求 recovery.read |
-| `GET /recovery/tasks` | Core 任务摘要分页；要求 recovery.read |
+| `GET /recovery/tasks` | Host 任务摘要分页；要求 recovery.read |
 | `GET /recovery/tasks/{id}` | RecoveryTask 任务详情，包含故障、已提交操作、实际动作和独立证据；要求 recovery.read |
-| `GET /recovery/tasks/{id}/approval` | 原始 Core ApprovalRecord，无审批时 record:null；要求 recovery.read |
+| `GET /recovery/tasks/{id}/approval` | 原始 Host control ApprovalRecord，无审批时 record:null；要求 recovery.read |
 | `POST /recovery/tasks/{id}/decision` | 审批 revision、decision:approve/deny/escalate、reason；要求 recovery.read 与 recovery.decide |
 | `POST /recovery/tasks/{id}/resume` | 任务 revision；要求 recovery.read 与 recovery.resume |
 | `POST /recovery/tasks/{id}/check_result` | operation_id、任务 revision；要求 recovery.read 与 recovery.check_result；异步读取节点证据 |
@@ -59,7 +59,7 @@ ui_dir为空时页面路由返回404。配置后启动加载固定14份官方静
 
 ## 自动恢复流程接口
 
-recovery_config 显式启用恢复流程；未配置的资源返回 503，无访问权限返回 403，未知任务返回 404。`/recovery/tasks` 使用共同 cursor、limit、state、query、task_id 参数，state 保留 Core snake_case 阶段；任务详情由 Core 记录生成；`result_check` 保存核实结果，执行证据中的 `checked_at_ms` 为核实时刻。审批使用完整 Core 类型。未获取完整操作和规则前不能批准。
+recovery_config 显式启用恢复流程；未配置的资源返回 503，无访问权限返回 403，未知任务返回 404。`/recovery/tasks` 使用共同 cursor、limit、state、query、task_id 参数，state 保留 control 的 snake_case 阶段；任务详情由 Host control 记录生成；`result_check` 保存核实结果，执行证据中的 `checked_at_ms` 为核实时刻。审批使用完整 Host control 类型。未获取完整操作和规则前不能批准。
 
 decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revision 是 RecoveryTask.revision。actor 由可信 operator 绑定，请求不能提供身份、验收或执行事实。过期、revision/状态冲突返回 409。JSON 结构拒绝返回 422，语义无效返回 400，存储或服务不可用返回 503；均使用共同错误格式。已返回 202 的异步节点查询失败写入 operation.error，客户端需读取操作结果。
 
@@ -75,7 +75,7 @@ decision 的 revision 是 ApprovalRecord.revision，resume/check_result 的 revi
 
 操作状态为running、completed、failed、canceled或unknown，时间使用Unix毫秒。completed只表示服务调用结束，仍须读取result：待人工、模拟失败和文件读回都不能转换为业务恢复成功。已派发后超时、断连或进程终止保留Unknown，重启不自动重放。
 
-HTTP应用日志与Core审批/故障记录分别承担传输接收和业务判定责任。请求取消不等于执行者已经停止；停止服务会请求通知被调用方取消、等待在途结果并等待相关服务完成当前任务。外部动作与回执写盘不是同一事务，不承诺精确一次。
+HTTP应用日志与 Host control 审批/故障记录分别承担传输接收和业务判定责任。请求取消不等于执行者已经停止；停止服务会请求通知被调用方取消、等待在途结果并等待相关服务完成当前任务。外部动作与回执写盘不是同一事务，不承诺精确一次。
 
 ## 分页、审批与故障
 
@@ -89,7 +89,7 @@ HTTP应用日志与Core审批/故障记录分别承担传输接收和业务判�
 
 ## 只读视图与记录
 
-插件监控通过通用 UI catalog/view GET 接口读取；旧 monitoring 路径保留兼容。专属描述须登记并满足权限、schema和限额，失败以独立状态降级，不加载插件HTML、脚本或资源。插件描述不能覆盖Core健康、授权或恢复事实。
+插件监控通过通用 UI catalog/view GET 接口读取；旧 monitoring 路径保留兼容。专属描述须登记并满足权限、schema和限额，失败以独立状态降级，不加载插件HTML、脚本或资源。插件描述不能覆盖 Host 健康、授权或恢复事实。
 
 独立页面与声明式 view 并列提供。目录保持 schema_version 1 和 views，新增 external_links 扁平入口数组及 link_statuses 插件状态数组；缺少 monitor.read 时只过滤 views，不阻止获准的外部页面读取。目录使用登记实例内快照，不触发插件调用。页面字段、URL 绑定和状态详见[独立页面契约](../extensions/pages.md#host-向-ui-提供的导航对象)。
 

@@ -1,6 +1,6 @@
 //! Locked, bounded, append-only transactions; confirmation follows durable sync.
+use crate::control::operation::{CommitReceipt, CommitRequest};
 use fs2::FileExt;
-use recuvora_core::operation::{CommitReceipt, CommitRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

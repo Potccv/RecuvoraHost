@@ -2,7 +2,7 @@
 
 继承[源码规范](../AGENTS.md)。
 
-- 维护 /api/v1 身份、权限、准确来源、请求限额与回执；核心授权与恢复决策由 Core 负责，可靠持久化由 Host persistence 负责。
+- 维护 /api/v1 身份、权限、准确来源、请求限额与回执；核心授权与恢复决策由 Host control 负责，可靠持久化由 Host persistence 负责。
 - 只允许回环监听和可信 Bearer 配置，不接受请求正文选择 actor；CORS 不能代替认证。
 - 所有副作用先记录接收/执行关联，拒绝重复 ID；回执丢失保留 Unknown，不自动重发模型或动作。
 - 人工决定、执行与结果核实绑定当前 revision；故障确认只记录关注。摘要不得充当完整审批证据。
@@ -10,5 +10,5 @@
 - 外部 UI 路径、令牌、活动配置和状态进入保护范围，真实修复不能改写宿主控制面。
 - 关闭先拒绝新业务、请求取消并等待已有请求结束，再关闭 Host 服务并释放日志资源；HTTP连接结束不能代替业务完成。
 - 日志查询、插件监控描述和观测记录只读且有界，不把任意插件数据解释为脚本、路由或授权。
-- /recovery 通过 RecoveryService 使用 Core 的任务、审批、恢复暂停任务、核实结果与知识契约；审批 revision 和任务 revision 不混用，actor 只来自可信 operator。
+- /recovery 通过 RecoveryService 使用 Host control 的任务、审批、恢复暂停任务、核实结果与知识契约；审批 revision 和任务 revision 不混用，actor 只来自可信 operator。
 - 客户端不提供 ProblemContext、任意脚本、执行 outcome 或验收证据；Unknown 结果核实经绑定节点查询，不复用旧许可。

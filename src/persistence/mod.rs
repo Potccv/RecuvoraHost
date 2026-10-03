@@ -1,4 +1,4 @@
-//! Trusted Host persistence for the pure Core aggregates.
+//! Trusted persistence for Host control aggregates.
 pub mod approval;
 pub mod incidents;
 pub mod journal;

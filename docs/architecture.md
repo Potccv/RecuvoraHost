@@ -1,40 +1,32 @@
 # Host 架构
 
-Host 是统一服务启动入口。它读取配置、认证操作员，初始化 runtime、监控、AI 服务接入（Harness）和 ExtensionRegistry，通过 Host 的 `RepairBackend`、`IncidentGuard` 调用节点与监控，并将证据提交给 Core 领域状态机。
+Host 集中管理认证、故障台账、审批、执行许可、恢复流程、知识隔离、持久化和运行生命周期。Core 只提供经验匹配、修复请求生成和经验构造；Node/插件采集目标、执行动作并提供独立验收。
 
-## 职责
+## 模块职责
 
 | 组件 | 责任 |
 | --- | --- |
-| Core | `operation` 提供提交提案与确认契约；`recovery` 计算故障、审批、一次性执行许可、修复经验与恢复流程的合法迁移 |
-| Host | 加载配置、身份认证、持久化、原子提交、取消监督、目标所有权、定时处理监控数据、选择 Harness 和执行节点、提供 HTTP/CLI |
-| Host `protocol` 模块 | 实现宿主的 v1 消息、schema、身份、版本、限额和 ID 规则；外部节点按 Host 文档独立实现 |
-| Node/插件 | 检查目标、执行动作、监督执行者、独立业务验收；提供自定义只读业务接口 |
-| UI | 通过 HTTP 查询和展示记录，提交人工决定；权限、执行结果和恢复状态由服务判定 |
+| Core 公共业务 API | `matching_experiences`、`prepare_repair`、`build_experience`，返回普通业务数据 |
+| Host [control](../src/control/README.md) | 输入与政策校验、故障/审批/恢复/知识权威状态、一次许可、隔离、提交绑定、重放 |
+| Host persistence | 配置和日志绑定、原子版本比较、可靠同步与提交确认 |
+| Host RecoveryService | 协调 control、持久提交、目标所有权、当前故障门及外部调用 |
+| Host runtime/boot | 服务装配、配置、定时处理、取消监督与关闭 |
+| Host protocol/integrations | 有界网络消息、schema、TLS、路由、节点和 Harness 适配 |
+| Node/插件 | 实际采集、动作、执行者监督、独立业务验收 |
+| UI/CLI/HTTP | 经认证服务查询与提交管理请求，不自行产生授权事实 |
 
-Core 当前没有 HostSettings/CoreSettings、网络客户端、HarnessRegistry、MonitorEngine 或原始日志上传接口。
+## 业务与管理接口
 
-## Core 接口映射
+`control::recovery::workflow::RecoveryState` 在准备修复时调用 Core `prepare_repair`。知识管理调用 Core `matching_experiences`，经验交付从已提交任务提取结果、动作和验收证据后调用 Core `build_experience`。Host 重导出共享业务类型，以保持各服务使用同一数据定义。
 
-| 服务接口 | 实现与使用位置 |
-| --- | --- |
-| Host `runtime::operation::{Cancellation, CallScope}` | 管理 Harness、扩展、监控和恢复流程调用的取消与结束等待 |
-| Host `persistence::incidents::IncidentStore` / Core `IncidentLedger` | 同时保存观察读取位置和故障，全部成功或全部失败；HTTP 查询和确认故障时核对记录版本号（revision） |
-| Host `ApprovalStore` / Core `ApprovalLedger`、`ExecutionPermit` | 自动恢复流程使用审批与一次性许可；独立文本修复复用审批服务 |
-| `RepairBackend` | `NodeRepairBackend` 实现 inspect/review/execute/verify/summarize；具体脚本类型与 executor 配置由 Host 解释 |
-| `IncidentGuard` | `MonitorIncidentGuard` 在监控同步锁内核对故障是否仍有效 |
-| `TargetOwnership` | HostRuntime 从显式共享 ownership_dir 打开 Host 的 FileTargetOwnership，绑定规范目标与恢复存储；非终态、Unknown 和不确定提交的持久所有者由 Host 保留 |
-| Host `RecoveryService` / Core `RecoveryState` | HostRuntime 按配置启动；HTTP 使用 query/tasks/approval/decide_human/resume/check_result/knowledge |
-| `RecoveryTask`、`ApprovalRecord`、`RepairExperience` | 恢复流程详情由 Core 记录生成，结果核实记录通过 result_check 展示；摘要省略完整脚本与审批规则 |
+Core 输出没有权限效力。Host 校验当前故障、环境、政策和审批期限，先可靠保存审批消费，再保存恢复授权；确认两项事实后才交付后端许可。具体动作提交后，实际网络发送前继续复核条件。细则见[审批](approval.md)和[提交约束](control/commits.md)。
 
-`submit` 和 `advance` 由恢复流程调度器按固定故障触发规则调用。客户端不能提交故障事实、脚本、审批规则或验收结论。暂停任务通过 RecoveryService.resume 恢复，未知执行结果（Unknown）通过 Host check_result 接口核实。`/repairs`、`/approvals` 是本机文本修复接口，自动恢复接口位于 `/recovery`。
+`IncidentLedger`、`ApprovalLedger`、`KnowledgeState` 与 `RecoveryState` 位于 Host control，状态没有可绕过校验的反序列化入口。`CommitReceipt` 只能由可信持久层在可靠提交后确认。恢复历史重复合法性检查，不产生新许可或派发动作。恢复服务保留跨日志提交顺序及中断续接，当前没有跨日志统一事务。
 
-Core 根据逻辑 `execution_harness`、`executor_id` 和允许的动作种类判定并记录完整 Harness 修复委托；具体动作使用中立 `RepairArtifact`。Host 的 `ScriptExecutorConfig` 管理脚本平台、语言和检查查询，并解析实际 node、workspace、endpoint 和连接。Node/插件返回检查、执行和验收证据，Core 据此决定最终状态。
+## 服务入口和关闭
 
-## 关闭服务
+`start_recovery` 按显式配置启动恢复调度，并从稳定 `ownership_dir` 绑定共享目标所有权。`open_recovery(data_dir, config, executor)` 仅打开低层服务；嵌入方负责绑定 `TargetOwnership`、`IncidentGuard`、认证与关闭，见 [Rust API](api/rust.md)。
 
-关闭顺序为：停止接受新的 HTTP/CLI 请求与定时派发；请求取消并等待恢复流程、监控和远端调用结束；保存最终结果；释放 Harness、扩展、runtime 和文件锁。连接关闭不能证明节点上的执行者已经停止。
+关闭先停止新请求和调度，再请求取消并等待恢复、监控和远端调用，保存最终事实后释放服务和文件锁。等待超过 30 秒保留错误和管理权，允许继续等待。断连或取消不证明节点执行者已停止；Unknown 和不确定提交保留目标归属。
 
-`start_recovery` 由 HostRuntime 绑定共享目标所有权并管理恢复流程调度器，关闭时先等待恢复任务结束，再停监控和外部服务。等待超过 30 秒时保留错误和服务管理权，允许再次等待。`open_recovery(data_dir, config, executor)` 显式接收 Host 执行器配置，只打开 Host 存储与 Core 领域状态，不启动调度器；调用方负责绑定 TargetOwnership、IncidentGuard 并关闭服务。所有保护同一规范目标的恢复存储必须共用稳定所有权目录，未完成和 Unknown 不能通过更换状态目录绕过互斥。
-
-人工批准、拒绝、撤销与结果核实必须经过身份认证的 Host API，并由 Core 校验。
+同一实际目标使用相同规范身份和稳定所有权目录，不得以更换恢复目录绕过未结束任务或 Unknown。独立文本修复与自动恢复使用独立入口，禁止同时管理同一目标。具体限制见[恢复流程](recovery.md)。

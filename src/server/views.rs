@@ -1,5 +1,5 @@
 use super::*;
-use recuvora_core::recovery::approval::{
+use crate::control::recovery::approval::{
     ApprovalRecord, ApprovalState, AssessmentSource, ReviewerConfig,
 };
 
@@ -73,7 +73,7 @@ pub(super) fn bootstrap(state: &Console) -> Result<Value, ApiError> {
                 "recovery.check_result",
                 "knowledge.read",
             ],
-            "启用后根据故障启动恢复；Core 负责审批、一次性执行许可、独立验收、未知执行结果和修复经验记录。",
+            "启用后根据故障启动恢复，统一管理审批、执行许可、验收、未知执行结果和修复经验。",
         ),
         capability(
             "simulation",

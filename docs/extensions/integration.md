@@ -17,7 +17,7 @@
 | ExtensionRegistry/HarnessRegistry 到 RepairBackend 的适配与 Host 脚本解释 | `src/integrations/recovery/node_backend.rs`、`executor.rs`、`harness_repair.rs` |
 | Host 恢复服务配置、按配置启动及等待在途任务结束 | `src/configuration/recovery.rs`、`src/boot/host.rs` |
 | 监控故障绑定、IncidentGuard 与恢复流程调度 | `src/integrations/recovery/incident_guard.rs`、`scheduler.rs` |
-| Core 任务、审批、修复经验与根据节点证据核实结果的 HTTP 管理 | `src/server/recovery.rs` |
+| Host 任务、审批、修复经验与根据节点证据核实结果的 HTTP 管理 | `src/server/recovery.rs` |
 | 插件 UI catalog、view 与页面刷新 HTTP 接口 | `src/server/http.rs`、`src/server/monitoring.rs`、`src/server/plugin_pages.rs` |
 
 插件目录通过 `GET /api/v1/ui/catalog` 提供声明式监控视图及独立页面入口，字段与刷新接口见[页面契约](pages.md)。`GET /api/v1/ui/plugins/{plugin_id}/views/{view_id}` 的 renderer 为 `monitoring_v1`，返回经 Host 校验和权限过滤的只读文档；旧 `/api/v1/monitoring/plugins/{id}` 保留为兼容接口。页面和 view 描述均不允许选择任意服务调用，也不产生写权限。

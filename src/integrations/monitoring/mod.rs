@@ -1,4 +1,4 @@
-//! External extension adapter for the Core monitoring source port.
+//! External extension adapter for the Host monitoring source port.
 
 use crate::integrations::extensions::ExtensionRegistry;
 use crate::monitoring::{

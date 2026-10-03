@@ -88,7 +88,7 @@ async fn incident_provenance_is_scope_checked_durable_and_never_dispatches_witho
         max_tool_calls: 4,
     };
     let (mut state, engine) = Console::open(cfg.clone()).await.unwrap();
-    // Only trusted target metadata is supplied for the presentation helper; no Core session is created.
+    // Only trusted target metadata is supplied for the presentation helper; no repair session is created.
     std::sync::Arc::get_mut(&mut state).unwrap().repair_config = Some(repair_config.clone());
     for (id, revision, status) in [
         (Some(source.id.as_str()), Some(source.revision + 1), 409),

@@ -17,3 +17,6 @@ pub mod simulation;
 #[cfg(test)]
 #[path = "../tests/workflow_support.rs"]
 pub(crate) mod workflow_test_support;
+
+/// Authorization, durable transitions and recovery control.
+pub mod control;

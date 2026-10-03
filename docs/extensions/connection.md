@@ -21,8 +21,8 @@ TLS 使用既有信任根和显式 PEM CA，节点 Bearer 从可信环境变量�
 | 接口约定 | Host 使用 |
 | --- | --- |
 | `recuvora.harness` v1 | 远端项目、会话与受控工具回调；审核使用独立容量和无工具会话 |
-| `recuvora.repair` v1 | 节点 inspect/verify，以及仅使用 Core 许可后的 execute_script |
-| `recuvora.repair` v1 的可选 reconcile | 只读原操作执行事实；与独立 verify 共同用于 Core 的执行结果核实 |
+| `recuvora.repair` v1 | 节点 inspect/verify，以及仅使用 Host control 许可后的 execute_script |
+| `recuvora.repair` v1 的可选 reconcile | 只读原操作执行事实；与独立 verify 共同用于 Host control 的执行结果核实 |
 | 插件命名空间接口约定 | 明确获准的只读观察、发现与查询；登记不产生业务写权限 |
 | 声明式 UI view | Host 校验并过滤只读描述，不执行插件 HTML 或脚本 |
 

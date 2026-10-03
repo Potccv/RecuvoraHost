@@ -1,5 +1,7 @@
 //! Trusted adapters for independent Harness calls and reserved repair-node routes.
 pub(super) use super::executor::{ScriptArtifact, ScriptExecutorConfig};
+pub(super) use crate::control::recovery::approval;
+pub(super) use crate::control::recovery::knowledge::RepairArtifact;
 pub(super) use crate::harnesses::{
     ConversationVisibility, HarnessRegistry, HarnessRole, HarnessRunRequest, HarnessTool,
     HarnessToolCall, HarnessToolFuture, HarnessToolHandler, HarnessToolResult, RemoteWorkspace,
@@ -12,8 +14,6 @@ pub(super) use crate::integrations::recovery::{
     SystemRecoveryClock, TargetBinding, TargetObservation, VerificationInput,
 };
 pub(super) use crate::runtime::operation::Cancellation;
-pub(super) use recuvora_core::recovery::approval;
-pub(super) use recuvora_core::recovery::knowledge::RepairArtifact;
 pub(super) use serde::Deserialize;
 pub(super) use serde_json::{Value, json};
 pub(super) use std::collections::{BTreeMap, BTreeSet};
@@ -170,10 +170,10 @@ impl RepairBackend for NodeRepairBackend {
 
     fn summarize(
         &self,
-        job: recuvora_core::recovery::workflow::ExperienceJob,
+        job: crate::control::recovery::workflow::ExperienceJob,
         config: RecoveryConfig,
         cancellation: Cancellation,
-    ) -> RecoveryFuture<'_, recuvora_core::recovery::knowledge::ExperienceReport> {
+    ) -> RecoveryFuture<'_, crate::control::recovery::knowledge::ExperienceReport> {
         Box::pin(super::harness_repair::summarize(
             self,
             job,
@@ -414,7 +414,7 @@ pub(super) enum WorkspacePurpose {
 }
 
 /// Resolve the logical Harness identity to its concrete node/workspace route.
-/// This keeps routing configuration out of Core's recovery policy.
+/// This keeps routing configuration out of the business request.
 pub(super) fn routed_request(
     registry: &HarnessRegistry,
     harness_id: &str,

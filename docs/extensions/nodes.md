@@ -49,7 +49,7 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
 
 ## 恢复执行器：`recuvora.repair`，version 1
 
-仅 `kind: node` 可提供该契约。`inspect`、`verify`、可选 `reconcile` 必须为 `read_only: true`；`execute_script` 必须为 false，且只能由 Core 消费一次性执行许可后的 Host 内部路由调用。
+仅 `kind: node` 可提供该契约。`inspect`、`verify`、可选 `reconcile` 必须为 `read_only: true`；`execute_script` 必须为 false，且只能由 Host control 消费一次性执行许可后的 Host 内部路由调用。
 
 | 方法 | params | result |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ Host 对 `projects`、`create_project`、`run` 校验声明的读写属性、输
 }
 ```
 
-这个脚本结构属于 Host 到节点的业务协议。Host 将 language、platform、source 封装进中立 `RepairArtifact.payload`，kind 为 `execute_script`，其余身份、前提和来源保持不变后交给 Core。Core 不解释脚本语言或平台；节点仍须执行自身的格式、执行器能力和沙箱校验。
+这个脚本结构属于 Host 到节点的业务协议。Host 将 language、platform、source 封装进中立 `RepairArtifact.payload`，kind 为 `execute_script`，其余身份、前提和来源由 Host control 校验并提交。Core 不解释脚本语言或平台；节点仍须执行自身的格式、执行器能力和沙箱校验。
 
 脚本文本最多 32 KiB；封装后的中立 JSON payload 也须不超过 32 KiB，因此实际允许的文本长度还受 JSON 转义及字段开销限制。节点必须验证目标、执行器、语言、平台、前置条件和自身执行范围，完整保留 operation 身份及不可变脚本版本；Host/Core 不提供节点进程沙箱。执行回执 summary 最多 8192 字节。无效或丢失回执保持 Unknown；同一操作不能因调用重试重新执行。结果核实从原节点查询原操作记录，再独立 verify，不重放脚本；`check_result` 是 Host 管理 API 名称，节点 wire 方法是 `reconcile`。
 

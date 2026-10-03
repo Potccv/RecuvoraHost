@@ -4,6 +4,7 @@
 
 | 公开模块 | 接口与能力 |
 | --- | --- |
+| [`control`](../../src/control/README.md) | `operation` 的提案/确认；`recovery::{approval, incidents, knowledge, workflow}` 的授权、状态与重放 |
 | [`boot`](../../src/boot/README.md) | `run_cli`；`host::HostConfig`、`MonitoringHostConfig`、`HostRuntime::start`；`harnesses`/`extensions`/`monitoring` 获取共享服务；`start_recovery`、`recovery`、`recovery_scheduler`；`begin_shutdown`/`shutdown` |
 | [`configuration`](../../src/configuration/README.md) | `RecoveryHostConfig::load`/`validate`、Harness 配置加载、独立文本修复配置加载/路径准备；`boot::host` 的加载包装增加应用源码边界及扩展控制路径保护 |
 | [`server`](../../src/server/README.md) | `ServerConfig`、`LogSourceConfig`/`LogResultMapping`、`ApiError`；`Console::open` 返回 console 与模拟 engine；`router` 接入 Axum；`Console::wait_for_idle`/`shutdown`，engine 另行关闭 |
@@ -18,7 +19,7 @@
 
 `HostRuntime::open_recovery(data_dir, config, executor)` 是低层 Host 恢复流程打开入口，显式接收 `ScriptExecutorConfig`，不启动恢复流程调度器；嵌入方需通过 `RecoveryService::bind_target_ownership` 绑定共享 `TargetOwnership`，绑定 `IncidentGuard`，并负责关闭恢复流程。未绑定目标所有权不能提交或推进任务；未绑定故障权威不能登记新故障。`start_recovery` 从必填 `ownership_dir` 打开 Host 的 `FileTargetOwnership` 并绑定，然后持有恢复流程调度器；关闭先取消并等待正在处理的恢复任务结束，再释放监控和提供方。保护同一规范目标的所有恢复存储必须共用稳定的所有权目录，不能随状态目录更换。嵌入方负责认证调用者和维护控制路径隔离，直接调用库不经过 HTTP 权限检查。
 
-Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供 `IncidentStore`、`ApprovalStore` 和知识命令存储；Core 的 `IncidentLedger`、`ApprovalLedger`、`KnowledgeState` 与 `RecoveryState` 计算变化，可靠提交后才确认提案并取得 `ExecutionPermit` 和后续意图；模型与插件拿不到核心状态存储或自行构造执行许可的入口。`cli` 与 `presentation` 是内部模块，外部应用使用上述公开服务。
+Host 定义 `RepairBackend` 与 `IncidentGuard`，通过 `persistence` 提供 `IncidentStore`、`ApprovalStore` 和知识命令存储；Host control 的 `IncidentLedger`、`ApprovalLedger`、`KnowledgeState` 与 `RecoveryState` 计算变化，可靠提交后才确认提案并取得 `ExecutionPermit` 和后续意图；模型与插件拿不到核心状态存储或自行构造执行许可的入口。`cli` 与 `presentation` 是内部模块，外部应用使用上述公开服务。
 
 协议类型与校验接口见 [Protocol Rust API](protocol.md)，应用职责与关闭顺序见 [架构](../architecture.md)。外部节点使用 [语言无关协议规范](../extensions/protocol.md)，不依赖本库。
 

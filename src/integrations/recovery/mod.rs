@@ -1,4 +1,4 @@
-//! Host adapters that bind the Core recovery state machine to external nodes.
+//! Host adapters that bind recovery control to external nodes.
 
 mod contract;
 mod executor;
@@ -23,7 +23,7 @@ pub use node_backend::NodeRepairBackend;
 pub use scheduler::{IncidentTrigger, RecoveryScheduler};
 pub use service::RecoveryService;
 
-pub use recuvora_core::recovery::workflow::{
+pub use crate::control::recovery::workflow::{
     BusinessVerification, CheckedExecution, ExecutionResultCheck, ProblemContext, RecoveryConfig,
     RecoveryStage, RecoveryTask, RepairExecutionOutcome, RepairReceipt, ResultCheckRecord,
     TargetBinding, TargetObservation,
@@ -52,9 +52,9 @@ pub enum RecoveryError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
-impl From<recuvora_core::recovery::workflow::RecoveryError> for RecoveryError {
-    fn from(value: recuvora_core::recovery::workflow::RecoveryError) -> Self {
-        use recuvora_core::recovery::workflow::RecoveryError as E;
+impl From<crate::control::recovery::workflow::RecoveryError> for RecoveryError {
+    fn from(value: crate::control::recovery::workflow::RecoveryError) -> Self {
+        use crate::control::recovery::workflow::RecoveryError as E;
         match value {
             E::Busy => Self::Busy,
             E::Conflict => Self::Conflict,
@@ -64,8 +64,8 @@ impl From<recuvora_core::recovery::workflow::RecoveryError> for RecoveryError {
         }
     }
 }
-impl From<recuvora_core::recovery::approval::ApprovalError> for RecoveryError {
-    fn from(value: recuvora_core::recovery::approval::ApprovalError) -> Self {
+impl From<crate::control::recovery::approval::ApprovalError> for RecoveryError {
+    fn from(value: crate::control::recovery::approval::ApprovalError) -> Self {
         Self::Approval(value.into())
     }
 }

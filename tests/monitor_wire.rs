@@ -1,6 +1,6 @@
 //! Loopback network protocol integration; the peer is only a test fixture.
 mod network_peer;
-use recuvora_core::recovery::incidents::{IncidentKind, IncidentStatus};
+use recuvora_host::control::recovery::incidents::{IncidentKind, IncidentStatus};
 use recuvora_host::integrations::extensions::{
     AllowedMethod, ContractDeclaration, ExtensionDefinition, ExtensionKind, ExtensionMetadata,
     ExtensionRegistry, ExtensionsConfig, Message, MethodDeclaration, NetworkEndpoint,

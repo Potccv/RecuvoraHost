@@ -1,6 +1,6 @@
 # 通用观测与监控
 
-本模块已实现配置驱动的只读轮询、确定性规则、样本新鲜度和采集完整性检查。具体日志、进程、指标和健康探针由独立节点项目实现；应用通过 Host `ObservationSource` 注入。故障变化由 Core IncidentLedger 校验，Host persistence::incidents::IncidentStore 持久提交，此模块不自动诊断或执行修复；显式恢复流程初始化见[恢复流程](../../docs/recovery.md)。
+本模块已实现配置驱动的只读轮询、确定性规则、样本新鲜度和采集完整性检查。具体日志、进程、指标和健康探针由独立节点项目实现；应用通过 Host `ObservationSource` 注入。故障变化由 Host control IncidentLedger 校验，Host persistence::incidents::IncidentStore 持久提交，此模块不自动诊断或执行修复；显式恢复流程初始化见[恢复流程](../../docs/recovery.md)。
 
 RecuvoraHost 的 `RegistryObservationSource` 可通过 ws/wss/http/https 承载节点来源；Core 不包含 ObservationSource 或网络接入。网络接入不会改变每个监控同时只处理一次轮询的限制、覆盖、游标与故障原子提交语义。
 

@@ -1,6 +1,6 @@
 use super::*;
+use crate::control::recovery::approval;
 use crate::runtime::operation::Cancellation;
-use recuvora_core::recovery::approval;
 use std::{future::Future, pin::Pin};
 #[derive(Clone, Debug)]
 pub struct ReviewInput {
@@ -21,7 +21,7 @@ pub struct VerificationInput {
 }
 
 /// Only the Host workflow adapter constructs this value after confirming the
-/// Core execution authorization. It cannot be cloned/deserialized and grants
+/// Host execution authorization. It cannot be cloned/deserialized and grants
 /// one dispatch to a trusted backend, subject to the final dispatch gate.
 pub struct AuthorizedRepair<'a> {
     pub(super) permit: &'a approval::ExecutionPermit,
@@ -90,10 +90,10 @@ pub trait RepairBackend: Send + Sync {
     /// Read-only post-repair reflection; failure must never rerun the repair.
     fn summarize(
         &self,
-        _job: recuvora_core::recovery::workflow::ExperienceJob,
+        _job: crate::control::recovery::workflow::ExperienceJob,
         _config: RecoveryConfig,
         _cancellation: Cancellation,
-    ) -> RecoveryFuture<'_, recuvora_core::recovery::knowledge::ExperienceReport> {
+    ) -> RecoveryFuture<'_, crate::control::recovery::knowledge::ExperienceReport> {
         Box::pin(async { Err(service("experience summary backend unavailable")) })
     }
     fn inspect<'a>(

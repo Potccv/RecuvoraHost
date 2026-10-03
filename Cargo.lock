@@ -1024,10 +1024,8 @@ dependencies = [
 name = "recuvora-core"
 version = "0.2.0"
 dependencies = [
- "im",
  "serde",
  "serde_json",
- "sha2",
  "thiserror",
 ]
 
@@ -1039,6 +1037,7 @@ dependencies = [
  "filepath",
  "fs2",
  "futures-util",
+ "im",
  "rcgen",
  "recuvora-core",
  "reqwest",
@@ -1046,6 +1045,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tokio-rustls",

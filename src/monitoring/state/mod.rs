@@ -8,11 +8,11 @@ use super::{
     BatchCoverage, Coverage, Freshness, MonitorDefinition, MonitorError, MonitorSnapshot,
     ObservationBatch, ObservationRequest, TargetHealth,
 };
-use checkpoint::SourceCheckpoint;
-pub(super) use checkpoint::restore_state;
-use recuvora_core::recovery::incidents::{
+use crate::control::recovery::incidents::{
     IncidentKind, IncidentSignal, MonitorCommit, SignalCondition,
 };
+use checkpoint::SourceCheckpoint;
+pub(super) use checkpoint::restore_state;
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 use std::time::Duration;

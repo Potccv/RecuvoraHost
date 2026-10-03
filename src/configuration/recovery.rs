@@ -1,4 +1,4 @@
-//! Host storage and scheduling settings around the Core domain contract.
+//! Host storage, scheduling and control configuration.
 use crate::integrations::recovery::IncidentTrigger;
 use crate::integrations::recovery::{CanonicalTarget, RecoveryConfig, RecoveryError};
 use crate::persistence::approval::ApprovalStoreConfig;

@@ -1,11 +1,11 @@
 //! Host-owned incident bindings and serial supervised recovery scheduling.
 use super::MonitorIncidentGuard;
+use crate::control::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
 use crate::integrations::recovery::{
     ProblemContext, RecoveryError, RecoveryService, RecoveryStage,
 };
 use crate::monitoring::MonitorHandle;
 use crate::runtime::operation::Cancellation;
-use recuvora_core::recovery::incidents::{IncidentKind, IncidentStatus, SignalCondition};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};

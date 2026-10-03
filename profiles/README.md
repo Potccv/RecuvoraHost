@@ -4,7 +4,7 @@
 
 | 模板 | 内容 |
 | --- | --- |
-| [server.example.json](server.example.json) | 回环HTTP、令牌、状态、可选Core能力配置和ui_dir |
+| [server.example.json](server.example.json) | 回环HTTP、令牌、状态、可选恢复能力配置和ui_dir |
 | [server.recovery.example.json](server.recovery.example.json) | 显式自动恢复流程的服务组合与最小管理权限 |
 | [extensions.example.json](extensions.example.json) | 网络endpoint、node身份与Harness方法白名单 |
 | [extensions.network.example.json](extensions.network.example.json) | wss网络节点与令牌环境变量占位 |
@@ -24,6 +24,6 @@ repair的harness_config与extensions_config引用外部活动文件，target-cop
 
 monitor占位接口约定com.example.observation没有内置提供方；由兼容插件/节点提供只读观察。监控自身不自动派发修复，确认收到也不解除故障。只有显式填写 recovery_config 或调用 HostRuntime.start_recovery 才会启动恢复流程调度器，处理按配置绑定的目标故障。
 
-恢复流程模板的外层和 recovery 均采用 schema_version 2；recovery 使用 Core 领域类型，executor 管理 platform、allowed_languages、diagnostic_queries，approval_store、knowledge_store 为 Host 存储限额配置；外层 data_dir 和必填 ownership_dir 相对活动恢复流程配置解析，彼此及与 console/独立文本修复状态分开。保护同一规范目标的所有恢复存储共用一个稳定 ownership_dir，未完成或 Unknown 不得通过更换目录绕过互斥。替换 Harness、executor 与 monitor 身份时须同时更新对应配置和准确方法白名单。恢复审批显式允许 repair_with_harness，具体动作限制为 execute_script，summary_timeout_secs 独立约束总结。节点需实现 recuvora.repair v1；核实未知执行结果额外需要只读 reconcile。模板不包含执行节点或任何实际业务恢复结论。
+恢复流程模板的外层和 recovery 均采用 schema_version 2；recovery 使用 Host control 配置类型，executor 管理 platform、allowed_languages、diagnostic_queries，approval_store、knowledge_store 为 Host 存储限额配置；外层 data_dir 和必填 ownership_dir 相对活动恢复流程配置解析，彼此及与 console/独立文本修复状态分开。保护同一规范目标的所有恢复存储共用一个稳定 ownership_dir，未完成或 Unknown 不得通过更换目录绕过互斥。替换 Harness、executor 与 monitor 身份时须同时更新对应配置和准确方法白名单。恢复审批显式允许 repair_with_harness，具体动作限制为 execute_script，summary_timeout_secs 独立约束总结。节点需实现 recuvora.repair v1；核实未知执行结果额外需要只读 reconcile。模板不包含执行节点或任何实际业务恢复结论。
 
 字段和边界见[配置说明](../docs/configuration.md)，接口见[HTTP说明](../docs/api/http.md)，开发规范见 [AGENTS](AGENTS.md)。

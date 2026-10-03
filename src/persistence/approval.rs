@@ -1,6 +1,6 @@
 use super::journal::Journal;
-use recuvora_core::operation::Prepared;
-pub use recuvora_core::recovery::approval::*;
+use crate::control::operation::Prepared;
+pub use crate::control::recovery::approval::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -451,9 +451,9 @@ pub enum ApprovalError {
     Json(#[from] serde_json::Error),
 }
 
-impl From<recuvora_core::recovery::approval::ApprovalError> for ApprovalError {
-    fn from(error: recuvora_core::recovery::approval::ApprovalError) -> Self {
-        use recuvora_core::recovery::approval::ApprovalError as E;
+impl From<crate::control::recovery::approval::ApprovalError> for ApprovalError {
+    fn from(error: crate::control::recovery::approval::ApprovalError) -> Self {
+        use crate::control::recovery::approval::ApprovalError as E;
         match error {
             E::NotFound => Self::NotFound,
             E::Conflict => Self::Conflict,
@@ -486,8 +486,8 @@ impl From<super::journal::JournalError> for ApprovalError {
         }
     }
 }
-impl From<recuvora_core::operation::CommitError> for ApprovalError {
-    fn from(error: recuvora_core::operation::CommitError) -> Self {
+impl From<crate::control::operation::CommitError> for ApprovalError {
+    fn from(error: crate::control::operation::CommitError) -> Self {
         Self::Corrupt(error.to_string())
     }
 }

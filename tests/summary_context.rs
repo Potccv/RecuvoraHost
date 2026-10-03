@@ -1,7 +1,7 @@
 use super::*;
-use recuvora_core::recovery::approval::ProposedOperation;
-use recuvora_core::recovery::knowledge::MAX_ARTIFACT_BYTES;
-use recuvora_core::recovery::workflow::{
+use crate::control::recovery::approval::ProposedOperation;
+use crate::control::recovery::knowledge::MAX_ARTIFACT_BYTES;
+use crate::control::recovery::workflow::{
     ExecutionResultCheck, MAX_REPAIR_REQUEST_BYTES, ProblemContext, RecoveryTask, RepairReceipt,
     ResultCheckRecord, TargetBinding, TargetObservation,
 };

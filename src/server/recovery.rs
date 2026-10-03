@@ -1,7 +1,7 @@
-//! Authenticated management of Core recovery facts; the scheduler owns dispatch.
+//! Authenticated management of Host recovery facts; the scheduler owns dispatch.
 use super::*;
+use crate::control::recovery::knowledge::KnowledgeQuery;
 use crate::integrations::recovery::{NodeRepairBackend, RecoveryTask};
-use recuvora_core::recovery::knowledge::KnowledgeQuery;
 
 pub(super) async fn status(State(state): State<Arc<Console>>) -> Result<Json<Value>, ApiError> {
     state.require("recovery.read")?;

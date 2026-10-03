@@ -1,6 +1,6 @@
 use super::journal::Journal;
-use recuvora_core::operation::CommitReceipt;
-pub use recuvora_core::recovery::knowledge::*;
+use crate::control::operation::CommitReceipt;
+pub use crate::control::recovery::knowledge::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -173,9 +173,9 @@ pub enum KnowledgeError {
     Io(#[from] std::io::Error),
 }
 
-impl From<recuvora_core::recovery::knowledge::KnowledgeError> for KnowledgeError {
-    fn from(error: recuvora_core::recovery::knowledge::KnowledgeError) -> Self {
-        use recuvora_core::recovery::knowledge::KnowledgeError as E;
+impl From<crate::control::recovery::knowledge::KnowledgeError> for KnowledgeError {
+    fn from(error: crate::control::recovery::knowledge::KnowledgeError) -> Self {
+        use crate::control::recovery::knowledge::KnowledgeError as E;
         match error {
             E::Invalid(value) => Self::Invalid(value),
             E::Conflict(value) => Self::Conflict(value),
@@ -197,8 +197,8 @@ impl From<super::journal::JournalError> for KnowledgeError {
         }
     }
 }
-impl From<recuvora_core::operation::CommitError> for KnowledgeError {
-    fn from(error: recuvora_core::operation::CommitError) -> Self {
+impl From<crate::control::operation::CommitError> for KnowledgeError {
+    fn from(error: crate::control::operation::CommitError) -> Self {
         Self::Corrupt(error.to_string())
     }
 }

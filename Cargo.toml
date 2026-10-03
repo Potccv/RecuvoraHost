@@ -13,10 +13,12 @@ description = "CLI and authenticated HTTP application host for Recuvora Core"
 dev-check = []
 
 [dependencies]
+im = { version = "15.1", features = ["serde"] }
+sha2 = "0.10"
 recuvora-core = { path = "../RecuvoraCore", version = "0.2.0" }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "signal", "net"] }
 axum = "=0.8.9"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 fs2 = "=0.4.3"
 thiserror = "2.0"
@@ -139,3 +141,23 @@ path = "tests/recovery.rs"
 [[test]]
 name = "process_recovery"
 path = "tests/process_recovery.rs"
+
+[[test]]
+name = "control_approval"
+path = "tests/control_approval.rs"
+
+[[test]]
+name = "control_commit"
+path = "tests/control_commit.rs"
+
+[[test]]
+name = "control_incidents"
+path = "tests/control_incidents.rs"
+
+[[test]]
+name = "control_knowledge"
+path = "tests/control_knowledge.rs"
+
+[[test]]
+name = "control_recovery"
+path = "tests/control_recovery.rs"
