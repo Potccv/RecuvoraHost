@@ -1,4 +1,4 @@
-use recuvora_host::control::operation::{CommitReceipt, Prepared};
+use recuvora_core::operation::{CommitReceipt, Prepared};
 use recuvora_host::control::recovery::incidents::*;
 use serde_json::json;
 

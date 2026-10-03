@@ -35,4 +35,4 @@
 | [实现状态](status.md)、[Host/Core 接入范围](status.md#host-003) | 当前集成能力、存储边界、检查证据及部署验收限制 |
 | [项目规范](../AGENTS.md)、[文档规范](AGENTS.md) | 长期开发规则与文档内容归属 |
 
-[控制参考](control/README.md)维护状态迁移、审批许可与跨域提交的完整规则。
+[控制参考](control/README.md)维护 Host 的事实提供、能力实现与可靠聚合提交约束。

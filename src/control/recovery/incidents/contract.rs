@@ -123,5 +123,5 @@ pub enum IncidentError {
     #[error("corrupt incident journal: {0}")]
     Corrupt(String),
     #[error(transparent)]
-    Commit(#[from] crate::control::operation::CommitError),
+    Commit(#[from] recuvora_core::operation::CommitError),
 }

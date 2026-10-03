@@ -6,7 +6,7 @@
 
 协议版本与 Host 软件版本独立。破坏性消息变化提升协议主版本；业务契约单独管理自己的版本。节点可以保存规范样例的本地副本并独立测试，不建立构建时跨项目依赖。
 
-网络、TLS、配置、注册、路由与认证由 Host 和节点分别实现；审批、许可及恢复权威状态由 Host control 维护。业务接口入口见[接入指南](connection.md)，宿主实现接口见[模块 API](../api/protocol.md)。本规范不声明已有提供方完成网络迁移。
+网络、TLS、配置、注册、路由与认证由 Host 和节点分别实现；审批、许可及恢复权威状态由 Core 维护。业务接口入口见[接入指南](connection.md)，宿主实现接口见[模块 API](../api/protocol.md)。本规范不声明已有提供方完成网络迁移。
 
 ## 消息表示
 
@@ -148,7 +148,7 @@ Host 在可信配置下登记插件命名空间契约，并使节点仅实现已
 
 Harness 项目、执行/审批会话与工具回调通过现有 Call/Result/Callback 表达；独立审批会话及正式工具许可属于 Host 业务约束。Host 协议模块不定义这些 params/result 的业务 Rust 类型或提供方实现。
 
-修复节点可提供 inspect、verify、execute_script 和可选只读 reconcile。Host 的显式结果核实从绑定节点取得原操作执行事实，再独立 verify，交由 Host control 检查并持久保存；这是明确触发的只读核实，不是自动对账、断连重试或重放脚本。execute_script 仍只能在 Host control 消费一次许可后由可信内部路由派发。具体证据格式与恢复流程由 Host 维护，不加入共同 `Outcome`。
+修复节点可提供 inspect、verify、execute_script 和可选只读 reconcile。Host 的显式结果核实从绑定节点取得原操作执行事实，再独立 verify，交由 Core 检查并持久保存；这是明确触发的只读核实，不是自动对账、断连重试或重放脚本。execute_script 仍只能在 Core 消费一次许可后由可信内部路由派发。具体证据格式与恢复流程由 Host 维护，不加入共同 `Outcome`。
 
 Host 还可消费 `recuvora.monitoring_view.v1` 能力下的只读 `describe_monitoring_view`，校验声明式数据后通过其 HTTP UI catalog/view 展示；描述调用有独立容量且不授予普通节点读取回调权限。配置绑定的目标记录查询同样使用已有只读契约调用。UI 描述、HTTP 路由、日志来源配置和业务字段不属于Host 协议模块，Host 协议模块不运行插件 HTML 或脚本。
 

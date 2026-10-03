@@ -1,5 +1,2 @@
-//! Independent, deterministic recovery domains.
-pub mod approval;
+//! Fault ledger for Host monitoring.
 pub mod incidents;
-pub mod knowledge;
-pub mod workflow;

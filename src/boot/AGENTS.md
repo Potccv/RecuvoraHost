@@ -2,7 +2,7 @@
 
 继承[源码规范](../AGENTS.md)。
 
-- HostRuntime 在本目录实现；配置读取与路径准备使用 Host `configuration`，恢复管理使用 Host control，业务计算使用 Core 公共契约，并保留宿主身份、附加路径保护和调用收尾责任。
+- HostRuntime 在本目录实现；配置读取与路径准备使用 Host `configuration`，恢复管理使用 Core 引擎公共契约，并保留宿主身份、附加路径保护和调用收尾责任。
 - 只装配明确配置的网络节点、Harness、监控、文本修复和封闭模拟；recovery 仅在显式配置或 API 调用后装配，普通启动不派发修复。
 - HostRuntime 拥有受管 scheduler，关闭先取消并等待恢复任务结束，再释放监控和提供方；低层 Host 恢复服务由调用方自行绑定 guard 和关闭。
 - 参数入口不能创造第二套审批或任务状态机，缺失关键服务时关闭对应能力，不静默回退提供方。

@@ -1,9 +1,7 @@
 //! Loopback network protocol fixtures for the real host-side repair backend.
 mod network_peer;
-use recuvora_host::control::recovery::approval::{
-    ApprovalPolicy, ProposedOperation, ReviewerConfig,
-};
-use recuvora_host::control::recovery::knowledge::KnowledgeQuery;
+use recuvora_core::recovery::approval::{ApprovalPolicy, ProposedOperation, ReviewerConfig};
+use recuvora_core::recovery::knowledge::KnowledgeQuery;
 use recuvora_host::harnesses::*;
 use recuvora_host::integrations::extensions::{
     AllowedMethod, ContractDeclaration, ExtensionDefinition, ExtensionKind, ExtensionMetadata,
@@ -1187,10 +1185,10 @@ impl RepairBackend for PostExecutionFault {
     }
     fn summarize(
         &self,
-        job: recuvora_host::control::recovery::workflow::ExperienceJob,
+        job: recuvora_core::recovery::workflow::ExperienceJob,
         config: RecoveryConfig,
         cancel: Cancellation,
-    ) -> RecoveryFuture<'_, recuvora_host::control::recovery::knowledge::ExperienceReport> {
+    ) -> RecoveryFuture<'_, recuvora_core::recovery::knowledge::ExperienceReport> {
         self.inner.summarize(job, config, cancel)
     }
 }
@@ -1291,7 +1289,7 @@ async fn unified_repair(mode: &str) -> TestResult {
             large_summary_preconditions()
         );
         assert_eq!(experience.evidence_refs, large_summary_evidence());
-        let recuvora_host::control::recovery::knowledge::Scriptability::Undetermined { reason } =
+        let recuvora_core::recovery::knowledge::Scriptability::Undetermined { reason } =
             &experience.report.scriptability
         else {
             panic!("omitted summary context must not produce a script candidate");
@@ -1339,7 +1337,7 @@ async fn unified_repair(mode: &str) -> TestResult {
         assert!(!recovery.experiences(&query)?.is_empty());
         for item in recovery.experiences(&query)? {
             if mode == "unified-candidate" {
-                let recuvora_host::control::recovery::knowledge::Scriptability::Possible {
+                let recuvora_core::recovery::knowledge::Scriptability::Possible {
                     candidate: Some(candidate),
                     ..
                 } = item.report.scriptability
@@ -1355,7 +1353,7 @@ async fn unified_repair(mode: &str) -> TestResult {
             } else {
                 assert!(matches!(
                     item.report.scriptability,
-                    recuvora_host::control::recovery::knowledge::Scriptability::NotSuitable { .. }
+                    recuvora_core::recovery::knowledge::Scriptability::NotSuitable { .. }
                 ));
             }
         }
@@ -1410,7 +1408,7 @@ async fn restarting_cannot_expand_or_change_the_approved_executor_scope() -> Tes
     recovery.decide_human(
         &task.id,
         approval.revision,
-        recuvora_host::control::recovery::approval::ApprovalDecision::Approve,
+        recuvora_core::recovery::approval::ApprovalDecision::Approve,
         "operator".into(),
         "original executor scope only".into(),
     )?;
@@ -1418,7 +1416,7 @@ async fn restarting_cannot_expand_or_change_the_approved_executor_scope() -> Tes
     recovery.shutdown().await?;
     drop(recovery);
     let history = std::fs::read(path.join("recovery.jsonl"))?;
-    let approval_history = std::fs::read(path.join("approvals/approvals.jsonl"))?;
+    let dispatch_history = std::fs::read(path.join("dispatch.jsonl"))?;
     let mut changed_scopes = Vec::new();
     let mut language = executor_config();
     language.allowed_languages.push("sh".into());
@@ -1443,8 +1441,8 @@ async fn restarting_cannot_expand_or_change_the_approved_executor_scope() -> Tes
         );
         assert_eq!(std::fs::read(path.join("recovery.jsonl"))?, history);
         assert_eq!(
-            std::fs::read(path.join("approvals/approvals.jsonl"))?,
-            approval_history
+            std::fs::read(path.join("dispatch.jsonl"))?,
+            dispatch_history
         );
     }
     let restored = RecoveryService::open(&path, settings, adapter)?;

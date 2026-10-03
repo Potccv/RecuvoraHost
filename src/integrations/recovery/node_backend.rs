@@ -1,7 +1,5 @@
 //! Trusted adapters for independent Harness calls and reserved repair-node routes.
 pub(super) use super::executor::{ScriptArtifact, ScriptExecutorConfig};
-pub(super) use crate::control::recovery::approval;
-pub(super) use crate::control::recovery::knowledge::RepairArtifact;
 pub(super) use crate::harnesses::{
     ConversationVisibility, HarnessRegistry, HarnessRole, HarnessRunRequest, HarnessTool,
     HarnessToolCall, HarnessToolFuture, HarnessToolHandler, HarnessToolResult, RemoteWorkspace,
@@ -14,6 +12,8 @@ pub(super) use crate::integrations::recovery::{
     SystemRecoveryClock, TargetBinding, TargetObservation, VerificationInput,
 };
 pub(super) use crate::runtime::operation::Cancellation;
+pub(super) use recuvora_core::recovery::approval;
+pub(super) use recuvora_core::recovery::knowledge::RepairArtifact;
 pub(super) use serde::Deserialize;
 pub(super) use serde_json::{Value, json};
 pub(super) use std::collections::{BTreeMap, BTreeSet};
@@ -170,10 +170,10 @@ impl RepairBackend for NodeRepairBackend {
 
     fn summarize(
         &self,
-        job: crate::control::recovery::workflow::ExperienceJob,
+        job: recuvora_core::recovery::workflow::ExperienceJob,
         config: RecoveryConfig,
         cancellation: Cancellation,
-    ) -> RecoveryFuture<'_, crate::control::recovery::knowledge::ExperienceReport> {
+    ) -> RecoveryFuture<'_, recuvora_core::recovery::knowledge::ExperienceReport> {
         Box::pin(super::harness_repair::summarize(
             self,
             job,

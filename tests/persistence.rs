@@ -1,6 +1,6 @@
 #[path = "workflow_support.rs"]
 mod support;
-use recuvora_host::control::operation::CommitRequest;
+use recuvora_core::operation::CommitRequest;
 use recuvora_host::persistence::{
     approval::*,
     incidents::*,

@@ -1,21 +1,15 @@
-//! Host persistence and effect dispatch around the control recovery reducer.
+//! Durable storage and supervised capabilities injected into the Core engine.
 use super::*;
-use crate::control::recovery::{
-    approval::{
-        self, ApprovalDecision, ApprovalRecord, ApprovalState, ExecutionOutcome, ReviewStage,
-    },
-    knowledge::KnowledgeQuery,
-    workflow::{
-        IncidentEvidence, RecoveryCommand, RecoveryEffect, RecoveryEntry, RecoveryEvent,
-        RecoveryState, TargetAuthority,
-    },
-};
 use crate::persistence::{
-    approval::{ApprovalStore, ApprovalStoreConfig},
-    journal::Journal,
-    knowledge::{KnowledgeStore, KnowledgeStoreConfig},
+    approval::ApprovalStoreConfig, journal::Journal, knowledge::KnowledgeStoreConfig,
 };
 use crate::runtime::operation::{CallScope, Cancellation};
+use recuvora_core::recovery::{
+    approval::{self, ApprovalDecision, ApprovalRecord},
+    engine::*,
+    knowledge::{ExperienceReport, KnowledgeConfig, KnowledgeQuery},
+    workflow::{ExperienceJob, IncidentEvidence, TargetAuthority},
+};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -37,10 +31,8 @@ struct DispatchRecord {
 
 struct State {
     root_lock: storage_layout::RootStorageLock,
-    workflow: RecoveryState,
+    session: RecoverySession,
     journal: Journal,
-    approvals: ApprovalStore,
-    knowledge: KnowledgeStore,
     dispatch: Journal,
     dispatch_pending: bool,
 }
@@ -55,7 +47,7 @@ impl State {
             dispatching,
         };
         let payload = serde_json::to_value(record)?;
-        let request = crate::control::operation::CommitRequest::new(
+        let request = recuvora_core::operation::CommitRequest::new(
             self.dispatch.next_id(),
             self.dispatch.revision(),
             "dispatch".into(),
@@ -89,16 +81,6 @@ impl State {
         if phase.dispatching {
             return Ok(());
         }
-        let approval = self.approval(&task)?;
-        if approval.state != ApprovalState::Unknown
-            && !(approval.state == ApprovalState::Failed
-                && task
-                    .result_check
-                    .as_ref()
-                    .is_some_and(|check| check.execution.outcome == CheckedExecution::NotExecuted))
-        {
-            return Ok(());
-        }
         let evidence_refs = vec![format!("host-dispatch:{commit_id}:not-dispatched")];
         let execution = ExecutionResultCheck {
             operation_id: operation.operation_id.clone(),
@@ -118,191 +100,60 @@ impl State {
             evidence_refs,
             verified_at_ms: now,
         };
-        self.event(
-            RecoveryEvent::ResultChecked {
-                task_id: id.into(),
-                revision: task.revision,
-                execution: execution.clone(),
-                verification: verification.clone(),
-                actor: "host-dispatch-recovery".into(),
-                approval: approval.clone(),
-            },
-            now,
-        )?;
-        if approval.state == ApprovalState::Failed {
-            return Ok(());
-        }
-        let approval = self.approvals.reconcile_unknown(
-            &approval.request.request_id,
-            ExecutionOutcome::Failed,
-            "durable Host dispatch boundary proves original action was not dispatched".into(),
-            "host-dispatch-recovery".into(),
-            now / 1000,
-        )?;
-        #[cfg(test)]
-        crash_boundary("not_dispatched_reconciled");
-        let task = self.task(id)?;
-        self.event(
-            RecoveryEvent::ResultChecked {
+        self.apply(
+            SessionCommand::CheckResult {
                 task_id: id.into(),
                 revision: task.revision,
                 execution,
                 verification,
                 actor: "host-dispatch-recovery".into(),
-                approval,
             },
             now,
         )?;
-        Ok(())
-    }
-    fn resume_result_check(&mut self, id: &str, now: u64) -> Result<(), RecoveryError> {
-        let task = self.task(id)?;
-        if task.stage != RecoveryStage::Unknown {
-            return Ok(());
-        }
-        let (Some(check), Some(verification)) = (task.result_check, task.verification) else {
-            return Ok(());
-        };
-        // Reuse the exact independently checked evidence. Restart does not make
-        // old business evidence fresh; stale evidence requires a new trusted check.
-        if check.execution.outcome == CheckedExecution::Unknown
-            || now.saturating_sub(check.execution.checked_at_ms) > 30_000
-            || now.saturating_sub(verification.verified_at_ms) > 30_000
-        {
-            return Ok(());
-        }
-        let mut approval = task
-            .approval_id
-            .as_ref()
-            .and_then(|id| self.approvals.get(id))
-            .cloned()
-            .ok_or_else(|| service("missing checked approval"))?;
-        if approval.state == ApprovalState::Unknown {
-            let outcome = if check.execution.outcome == CheckedExecution::Executed {
-                ExecutionOutcome::Executed
-            } else {
-                ExecutionOutcome::Failed
-            };
-            approval = self.approvals.reconcile_unknown(
-                &approval.request.request_id,
-                outcome,
-                "resume independently checked evidence committed before restart".into(),
-                check.actor.clone(),
-                now / 1000,
-            )?;
-        }
-        self.event(
-            RecoveryEvent::ResultChecked {
-                task_id: id.into(),
-                revision: task.revision,
-                execution: check.execution,
-                verification,
-                actor: check.actor,
-                approval,
-            },
-            now,
-        )?;
+        #[cfg(test)]
+        crash_boundary("not_dispatched_committed");
         Ok(())
     }
     fn apply(
         &mut self,
-        command: RecoveryCommand,
+        command: SessionCommand,
         now: u64,
-    ) -> Result<Vec<RecoveryEffect>, RecoveryError> {
+    ) -> Result<Vec<SessionEffect>, RecoveryError> {
         self.root_lock.validate()?;
         #[cfg(test)]
-        let verification_boundary = matches!(
-            &command,
-            RecoveryCommand::Event(RecoveryEvent::VerificationRecorded { .. })
-        );
-        let prepared =
-            self.workflow
-                .prepare(self.journal.next_id(), command, now, self.knowledge.state())?;
-        let entry = prepared
+        let boundary = match &command {
+            SessionCommand::Start { .. } => "start_committed",
+            SessionCommand::Authorize { .. } => "authorization_committed",
+            SessionCommand::Executed { .. } => "receipt_committed",
+            SessionCommand::Verified { .. } => "verification_committed",
+            SessionCommand::CheckResult { .. } => "result_check_committed",
+            SessionCommand::Deliver => "experience_committed",
+            _ => "",
+        };
+        let pending = self.session.prepare(self.journal.next_id(), command, now)?;
+        let entry = pending
             .state()
             .latest_entry()
-            .ok_or_else(|| service("missing recovery entry"))?;
+            .ok_or_else(|| service("missing session entry"))?;
         let receipt = self
             .journal
-            .commit(prepared.request(), serde_json::to_value(entry)?)
+            .commit(pending.request(), serde_json::to_value(entry)?)
             .map_err(service)?;
-        let committed = prepared.confirm(receipt).map_err(service)?;
-        self.workflow = committed.state;
+        let committed = pending.confirm(receipt).map_err(service)?;
+        self.session = committed.state;
         #[cfg(test)]
-        {
-            if verification_boundary {
-                crash_boundary("verification_committed");
-            }
-            if committed
-                .effects
-                .iter()
-                .any(|effect| matches!(effect, RecoveryEffect::RequestApproval { .. }))
-            {
-                crash_boundary("operation_committed");
-            }
-        }
+        crash_boundary(boundary);
         Ok(committed.effects)
     }
-    fn event(
-        &mut self,
-        event: RecoveryEvent,
-        now: u64,
-    ) -> Result<Vec<RecoveryEffect>, RecoveryError> {
-        self.apply(RecoveryCommand::Event(event), now)
-    }
     fn task(&self, id: &str) -> Result<RecoveryTask, RecoveryError> {
-        self.workflow
+        self.session
             .task(id)
             .cloned()
             .ok_or_else(|| RecoveryError::Invalid("task not found".into()))
     }
-    fn approval(&self, task: &RecoveryTask) -> Result<ApprovalRecord, RecoveryError> {
-        task.approval_id
-            .as_ref()
-            .and_then(|id| self.approvals.get(id).cloned())
-            .ok_or_else(|| service("missing approval"))
-    }
-    fn attach(
-        &mut self,
-        task: &RecoveryTask,
-        config: &RecoveryConfig,
-        now: u64,
-    ) -> Result<(), RecoveryError> {
-        let op = task
-            .operation
-            .clone()
-            .ok_or_else(|| service("missing original operation"))?;
-        let record = self
-            .approvals
-            .request(op, config.approval.clone(), now / 1000)?;
-        #[cfg(test)]
-        crash_boundary("approval_requested");
-        self.event(
-            RecoveryEvent::ApprovalAttached {
-                task_id: task.id.clone(),
-                revision: task.revision,
-                record,
-            },
-            now,
-        )?;
-        Ok(())
-    }
-    fn deliver(&mut self, now: u64) -> Result<(), RecoveryError> {
-        for job in self.workflow.pending_experiences() {
-            if job.report.is_some() {
-                self.knowledge
-                    .record_experience(job.record()?)
-                    .map_err(service)?;
-                #[cfg(test)]
-                crash_boundary("knowledge_committed");
-                self.event(RecoveryEvent::ExperienceDelivered { job_id: job.id }, now)?;
-            }
-        }
-        Ok(())
-    }
 }
 
-/// Owns protected storage, trusted ports and supervised calls; control owns transitions.
+/// Owns protected storage, trusted ports and supervised calls; Core owns transitions.
 pub struct RecoveryService {
     config: RecoveryConfig,
     backend: Arc<dyn RepairBackend>,
@@ -374,43 +225,43 @@ impl RecoveryService {
         let mut root_lock = storage_layout::RootStorageLock::acquire(root)?;
         let directory = root_lock.resolve(root)?;
         let dir = directory.as_path();
-        // Host execution restrictions remain bound even though Core is provider neutral.
-        let storage_config = serde_json::json!({
-            "recovery": config,
-            "backend": backend.persistence_binding(),
-        });
+        approval_config.validate()?;
+        knowledge_config.validate().map_err(service)?;
+        let session_config = SessionConfig {
+            recovery: config.clone(),
+            approvals: approval::ApprovalLimits {
+                max_requests: approval_config.max_requests,
+            },
+            knowledge: KnowledgeConfig {
+                max_records: knowledge_config.max_records,
+            },
+        };
+        // The aggregate honors the strictest configured journal ceiling.
+        let max_bytes = (256 * 1024 * 1024)
+            .min(approval_config.max_journal_bytes)
+            .min(knowledge_config.max_journal_bytes);
+        let storage_config = serde_json::json!({"engine":"recovery-session-v1","session":session_config,"approval_storage":approval_config,"knowledge_storage":knowledge_config,"backend":backend.persistence_binding()});
         let journal = Journal::open(
             dir.join("recovery.jsonl"),
-            "recovery",
+            "recovery-session",
             storage_config.clone(),
-            256 * 1024 * 1024,
+            max_bytes,
         )
         .map_err(service)?;
-        let entries: Vec<RecoveryEntry> = journal
+        let entries: Vec<SessionEntry> = journal
             .records()
             .iter()
             .map(|record| {
-                let entry: RecoveryEntry = serde_json::from_value(record.payload.clone())?;
+                let entry: SessionEntry = serde_json::from_value(record.payload.clone())?;
                 if entry.request != record.request {
                     return Err(RecoveryError::Corrupt(
-                        "recovery payload and commit request differ".into(),
+                        "session payload and commit request differ".into(),
                     ));
                 }
                 Ok(entry)
             })
             .collect::<Result<_, RecoveryError>>()?;
-        let workflow = if entries.is_empty() {
-            RecoveryState::new(config.clone())?
-        } else {
-            RecoveryState::restore(config.clone(), &entries)?
-        };
-        let approvals = ApprovalStore::open(
-            dir.join("approvals"),
-            approval_config,
-            clock.now_ms() / 1000,
-        )?;
-        let knowledge =
-            KnowledgeStore::open(dir.join("knowledge.jsonl"), knowledge_config).map_err(service)?;
+        let session = RecoverySession::restore(session_config, &entries)?;
         let dispatch = Journal::open(
             dir.join("dispatch.jsonl"),
             "dispatch",
@@ -429,68 +280,16 @@ impl RecoveryService {
         }
         let mut state = State {
             root_lock,
-            workflow,
+            session,
             journal,
-            approvals,
-            knowledge,
             dispatch,
             dispatch_pending: false,
         };
-        if state.workflow.recovery_required() {
-            state.event(RecoveryEvent::Recover, clock.now_ms())?;
-            let recovered: Vec<_> = state.workflow.tasks().cloned().collect();
-            for task in recovered {
-                if task.stage != RecoveryStage::Paused {
-                    continue;
-                }
-                let record = task
-                    .operation
-                    .as_ref()
-                    .and_then(|op| {
-                        state
-                            .approvals
-                            .find_operation(&op.task_id, &op.operation_id)
-                    })
-                    .cloned();
-                if let Some(record) = record
-                    && matches!(
-                        record.state,
-                        ApprovalState::Unknown
-                            | ApprovalState::Executing
-                            | ApprovalState::Executed
-                            | ApprovalState::Failed
-                    )
-                {
-                    // Repair the interrupted association without resuming an executable
-                    // approval. Consumed authority is transferred into Unknown only.
-                    state.event(
-                        RecoveryEvent::Resume {
-                            task_id: task.id.clone(),
-                            revision: task.revision,
-                        },
-                        clock.now_ms(),
-                    )?;
-                    let current = state.task(&task.id)?;
-                    let event = if current.approval_id.is_none() {
-                        RecoveryEvent::ApprovalAttached {
-                            task_id: current.id,
-                            revision: current.revision,
-                            record,
-                        }
-                    } else {
-                        RecoveryEvent::ApprovalResolved {
-                            task_id: current.id,
-                            revision: current.revision,
-                            record,
-                        }
-                    };
-                    state.event(event, clock.now_ms())?;
-                }
-            }
-            let ids: Vec<_> = state.workflow.tasks().map(|task| task.id.clone()).collect();
+        if state.session.recovery_required() {
+            state.apply(SessionCommand::Recover, clock.now_ms())?;
+            let ids: Vec<_> = state.session.tasks().map(|task| task.id.clone()).collect();
             for id in ids {
                 state.not_dispatched(&id, &config, clock.now_ms())?;
-                state.resume_result_check(&id, clock.now_ms())?;
             }
         }
         Ok(Arc::new(Self {
@@ -572,28 +371,27 @@ impl RecoveryService {
         f(state.as_ref().ok_or(RecoveryError::Stopped)?)
     }
     pub fn query(&self, id: &str) -> Result<Option<RecoveryTask>, RecoveryError> {
-        self.read_state(|s| Ok(s.workflow.task(id).cloned()))
+        self.read_state(|s| Ok(s.session.task(id).cloned()))
     }
     pub fn tasks(&self) -> Result<Vec<RecoveryTask>, RecoveryError> {
-        self.read_state(|s| Ok(s.workflow.tasks().cloned().collect()))
+        self.read_state(|s| Ok(s.session.tasks().cloned().collect()))
     }
     pub fn experiences(
         &self,
         query: &KnowledgeQuery,
-    ) -> Result<Vec<crate::control::recovery::knowledge::RepairExperience>, RecoveryError> {
-        self.read_state(|s| {
-            s.knowledge
-                .state()
-                .search_experiences(query)
-                .map_err(service)
-        })
+    ) -> Result<Vec<recuvora_core::recovery::knowledge::RepairExperience>, RecoveryError> {
+        self.read_state(|s| Ok(s.session.experiences(query)?))
     }
+
     /// Retry committed experience delivery even when every business task ended.
     /// This never reconstructs execution effects or changes operation identity.
     pub fn deliver_pending(&self) -> Result<(), RecoveryError> {
         self.accepting()?;
         self.owner()?;
-        self.with_state(|s| s.deliver(self.clock.now_ms()))
+        self.with_state(|s| {
+            s.apply(SessionCommand::Deliver, self.clock.now_ms())?;
+            Ok(())
+        })
     }
     pub fn submit(&self, problem: ProblemContext) -> Result<RecoveryTask, RecoveryError> {
         self.accepting()?;
@@ -609,14 +407,14 @@ impl RecoveryService {
             }
             let incident = incident(&problem, current)?;
             result = Some(self.with_state(|s| {
-                s.event(
-                    RecoveryEvent::Register {
+                s.apply(
+                    SessionCommand::Register {
                         problem: problem.clone(),
                         incident,
                     },
                     self.clock.now_ms(),
                 )?;
-                s.workflow
+                s.session
                     .tasks()
                     .find(|t| t.problem.incident_id == problem.incident_id)
                     .cloned()
@@ -628,11 +426,8 @@ impl RecoveryService {
     }
     pub fn approval(&self, id: &str) -> Result<Option<ApprovalRecord>, RecoveryError> {
         self.read_state(|s| {
-            let task = s.task(id)?;
-            Ok(task
-                .approval_id
-                .as_ref()
-                .and_then(|id| s.approvals.get(id).cloned()))
+            s.task(id)?;
+            Ok(s.session.approval(id).cloned())
         })
     }
     pub fn decide_human(
@@ -644,37 +439,35 @@ impl RecoveryService {
         reason: String,
     ) -> Result<ApprovalRecord, RecoveryError> {
         self.accepting()?;
+        self.owner()?;
         self.with_state(|s| {
-            let task = s.task(id)?;
-            let record = s.approval(&task)?;
-            if record.revision != revision {
-                return Err(RecoveryError::Conflict);
-            }
-            Ok(s.approvals.decide_human(
-                &record.request.request_id,
-                decision,
-                reason,
-                actor,
-                &record.request.policy,
-                self.clock.now_ms() / 1000,
-            )?)
+            s.apply(
+                SessionCommand::HumanDecision {
+                    task_id: id.into(),
+                    revision,
+                    decision,
+                    actor,
+                    reason,
+                },
+                self.clock.now_ms(),
+            )?;
+            s.session
+                .approval(id)
+                .cloned()
+                .ok_or_else(|| service("missing approval"))
         })
     }
     pub fn resume(&self, id: &str, revision: u64) -> Result<RecoveryTask, RecoveryError> {
         self.accepting()?;
         self.owner()?;
         self.with_state(|s| {
-            s.event(
-                RecoveryEvent::Resume {
+            s.apply(
+                SessionCommand::Resume {
                     task_id: id.into(),
                     revision,
                 },
                 self.clock.now_ms(),
             )?;
-            let task = s.task(id)?;
-            if task.approval_id.is_none() {
-                s.attach(&task, &self.config, self.clock.now_ms())?;
-            }
             s.task(id)
         })
     }
@@ -697,7 +490,9 @@ impl RecoveryService {
                     service: service.clone(),
                     id: id.clone(),
                 };
-                Box::pin(service.run(&id, cancel)).await
+                RecoveryEngine::advance(&Platform::new(service.clone(), cancel), &id)
+                    .await
+                    .map_err(Into::into)
             })
             .await
             .map_err(super::service)?
@@ -726,520 +521,17 @@ impl RecoveryService {
         let cancel = cancellation.clone();
         self.calls
             .run(cancellation, async move {
-                let jobs = service.with_state(|s| Ok(s.workflow.pending_experiences()))?;
-                for job in jobs
-                    .into_iter()
-                    .filter(|j| {
-                        j.report.is_none() && j.call_id.is_none() && (explicit || j.attempt < 3)
-                    })
-                    .take(4)
-                {
-                    if cancel.is_cancelled() {
-                        break;
-                    }
-                    let effects = service.with_state(|s| {
-                        s.event(
-                            RecoveryEvent::BeginExperience {
-                                job_id: job.id.clone(),
-                            },
-                            service.clock.now_ms(),
-                        )
-                    })?;
-                    let Some(RecoveryEffect::SummarizeExperience { job, call_id }) =
-                        effects.into_iter().next()
-                    else {
-                        return Err(super::service("missing summary effect"));
-                    };
-                    let result = bounded(
-                        service.backend.summarize(
-                            *job.clone(),
-                            service.config.clone(),
-                            cancel.clone(),
-                        ),
-                        cancel.clone(),
-                        service.config.summary_timeout_secs,
-                    )
-                    .await;
-                    service.with_state(|s| {
-                        let event = match result {
-                            Ok(report) => RecoveryEvent::ExperienceSummarized {
-                                job_id: job.id.clone(),
-                                call_id: call_id.clone(),
-                                report,
-                            },
-                            Err(error) => RecoveryEvent::ExperienceFailed {
-                                job_id: job.id.clone(),
-                                call_id: call_id.clone(),
-                                reason: bounded_reason(&error),
-                            },
-                        };
-                        if let Err(error) = s.event(event, service.clock.now_ms()) {
-                            // Validation failure is a failed summary, not a stuck in-flight call.
-                            s.event(
-                                RecoveryEvent::ExperienceFailed {
-                                    job_id: job.id.clone(),
-                                    call_id,
-                                    reason: bounded_reason(&error),
-                                },
-                                service.clock.now_ms(),
-                            )?;
-                        }
-                        Ok(())
-                    })?;
-                }
-                service.with_state(|s| s.deliver(service.clock.now_ms()))
+                RecoveryEngine::summarize_pending(&Platform::new(service, cancel), explicit)
+                    .await
+                    .map_err(RecoveryError::from)
             })
             .await
             .map_err(super::service)?
     }
     pub fn pending_experiences(
         &self,
-    ) -> Result<Vec<crate::control::recovery::workflow::ExperienceJob>, RecoveryError> {
-        self.read_state(|s| Ok(s.workflow.pending_experiences()))
-    }
-    async fn run(
-        self: &Arc<Self>,
-        id: &str,
-        cancellation: Cancellation,
-    ) -> Result<RecoveryTask, RecoveryError> {
-        for _ in 0..64 {
-            self.owner()?;
-            let task = self.with_state(|s| s.task(id))?;
-            if task.stage.terminal()
-                || matches!(task.stage, RecoveryStage::Paused | RecoveryStage::Unknown)
-            {
-                // Experience failures remain visible in their durable jobs, independent of this result.
-                let _ = Box::pin(self.summarize_pending(cancellation.clone())).await;
-                return Ok(task);
-            }
-            if cancellation.is_cancelled()
-                && !matches!(
-                    task.stage,
-                    RecoveryStage::Executing | RecoveryStage::Verifying
-                )
-            {
-                return self.cancel_task(&task);
-            }
-            match task.stage {
-                RecoveryStage::Queued => {
-                    let observation = bounded(
-                        self.backend
-                            .inspect(&self.config.target, cancellation.clone()),
-                        cancellation.clone(),
-                        self.config.target.action_timeout_secs,
-                    )
-                    .await?;
-                    self.with_state(|s| {
-                        s.apply(
-                            RecoveryCommand::StartRepair {
-                                task_id: id.into(),
-                                revision: task.revision,
-                                observation,
-                            },
-                            self.clock.now_ms(),
-                        )
-                    })?;
-                }
-                RecoveryStage::AwaitingApproval => {
-                    if task.approval_id.is_none() {
-                        self.with_state(|s| s.attach(&task, &self.config, self.clock.now_ms()))?;
-                        continue;
-                    }
-                    let record = self.with_state(|s| s.approval(&task))?;
-                    if record.state == ApprovalState::Approved {
-                        self.execute(&task, cancellation.clone()).await?;
-                    } else if matches!(
-                        record.state,
-                        ApprovalState::Pending | ApprovalState::WaitingHuman
-                    ) {
-                        if !self.review(&record, cancellation.clone()).await? {
-                            return self.with_state(|s| s.task(id));
-                        }
-                    } else {
-                        self.with_state(|s| {
-                            s.event(
-                                RecoveryEvent::ApprovalResolved {
-                                    task_id: id.into(),
-                                    revision: task.revision,
-                                    record,
-                                },
-                                self.clock.now_ms(),
-                            )?;
-                            Ok(())
-                        })?;
-                    }
-                }
-                RecoveryStage::Verifying => {
-                    let operation = task
-                        .operation
-                        .clone()
-                        .ok_or_else(|| service("missing operation"))?;
-                    let receipt = task
-                        .receipt
-                        .clone()
-                        .ok_or_else(|| service("missing receipt"))?;
-                    let result = bounded(
-                        self.backend.verify(
-                            VerificationInput {
-                                target: self.config.target.clone(),
-                                operation,
-                                receipt,
-                            },
-                            cancellation.clone(),
-                        ),
-                        cancellation.clone(),
-                        self.config.target.action_timeout_secs,
-                    )
-                    .await;
-                    self.with_state(|s| {
-                        let event = match result {
-                            Ok(verification) => RecoveryEvent::VerificationRecorded {
-                                task_id: id.into(),
-                                revision: task.revision,
-                                verification,
-                            },
-                            Err(error) => RecoveryEvent::VerificationUnavailable {
-                                task_id: id.into(),
-                                revision: task.revision,
-                                reason: bounded_reason(&error),
-                            },
-                        };
-                        s.event(event, self.clock.now_ms())?;
-                        Ok(())
-                    })?;
-                }
-                _ => return Err(service("task has an existing in-flight effect")),
-            }
-        }
-        Err(RecoveryError::Capacity)
-    }
-    async fn review(
-        &self,
-        record: &ApprovalRecord,
-        cancellation: Cancellation,
-    ) -> Result<bool, RecoveryError> {
-        let now = self.clock.now_ms() / 1000;
-        if now >= record.request.expires_at {
-            self.with_state(|s| {
-                s.approvals.expire(&record.request.request_id, now)?;
-                Ok(())
-            })?;
-            return Ok(true);
-        }
-        if matches!(
-            record.request.policy.reviewer,
-            approval::ReviewerConfig::Human
-        ) || record.review_stage == ReviewStage::NeedsHuman
-            || (record.review_stage == ReviewStage::WaitingHuman
-                && record.human_deadline.is_some_and(|deadline| now < deadline))
-        {
-            return Ok(false);
-        }
-        if record.review_stage == ReviewStage::ReviewingHarness {
-            if record
-                .review_deadline
-                .is_some_and(|deadline| now >= deadline)
-            {
-                self.with_state(|s| {
-                    s.approvals.expire_review(
-                        &record.request.request_id,
-                        record.revision,
-                        &record.request.policy,
-                        now,
-                    )?;
-                    Ok(())
-                })?;
-            }
-            return Ok(false);
-        }
-        let observation = bounded(
-            self.backend
-                .inspect(&self.config.target, cancellation.clone()),
-            cancellation.clone(),
-            self.config.review_timeout_secs,
-        )
-        .await?;
-        let timeout = match record.request.policy.reviewer {
-            approval::ReviewerConfig::HumanThenHarness {
-                review_timeout_secs,
-                ..
-            } => self.config.review_timeout_secs.min(review_timeout_secs),
-            _ => self.config.review_timeout_secs,
-        };
-        let attempt = self.with_state(|s| {
-            Ok(s.approvals.begin_harness_review(
-                &record.request.request_id,
-                record.revision,
-                &record.request.policy,
-                timeout,
-                self.clock.now_ms() / 1000,
-            )?)
-        })?;
-        let result = bounded(
-            self.backend.review(
-                ReviewInput {
-                    request: record.request.clone(),
-                    attempt: attempt.clone(),
-                    observation,
-                },
-                cancellation.clone(),
-            ),
-            cancellation,
-            timeout,
-        )
-        .await;
-        self.with_state(|s| {
-            let saved = match result {
-                Ok(value) => s.approvals.assess_attempt(
-                    &attempt,
-                    value.assessment,
-                    value.identity,
-                    &record.request.policy,
-                    self.clock.now_ms() / 1000,
-                ),
-                Err(error) => s.approvals.fail_review_attempt(
-                    &attempt,
-                    bounded_reason(&error),
-                    &record.request.policy,
-                    self.clock.now_ms() / 1000,
-                ),
-            };
-            if let Err(error) = saved {
-                // A late callback cannot overwrite a concurrent human decision.
-                if s.approvals
-                    .get(&attempt.request_id)
-                    .and_then(|r| r.active_review_attempt())
-                    .as_ref()
-                    == Some(&attempt)
-                {
-                    s.approvals.fail_review_attempt(
-                        &attempt,
-                        bounded_reason(&error),
-                        &record.request.policy,
-                        self.clock.now_ms() / 1000,
-                    )?;
-                }
-            }
-            Ok(())
-        })?;
-        Ok(true)
-    }
-    fn cancel_task(&self, task: &RecoveryTask) -> Result<RecoveryTask, RecoveryError> {
-        self.with_state(|s| {
-            let mut task = task.clone();
-            if task.operation.is_some() && task.approval_id.is_none() {
-                s.attach(&task, &self.config, self.clock.now_ms())?;
-                task = s.task(&task.id)?;
-            }
-            let approval = if let Some(id) = &task.approval_id {
-                Some(s.approvals.cancel(
-                    id,
-                    "Host canceled before dispatch".into(),
-                    self.clock.now_ms() / 1000,
-                )?)
-            } else {
-                None
-            };
-            s.event(
-                RecoveryEvent::Cancel {
-                    task_id: task.id.clone(),
-                    revision: task.revision,
-                    approval,
-                },
-                self.clock.now_ms(),
-            )?;
-            s.task(&task.id)
-        })
-    }
-    async fn execute(
-        self: &Arc<Self>,
-        task: &RecoveryTask,
-        cancellation: Cancellation,
-    ) -> Result<(), RecoveryError> {
-        let observation = bounded(
-            self.backend
-                .inspect(&self.config.target, cancellation.clone()),
-            cancellation.clone(),
-            self.config.target.action_timeout_secs,
-        )
-        .await?;
-        if cancellation.is_cancelled() {
-            self.cancel_task(task)?;
-            return Ok(());
-        }
-        let guard = self
-            .incident_guard
-            .get()
-            .ok_or_else(|| service("incident guard not bound"))?;
-        let lease = tokio::select! {
-            lease = guard.acquire_dispatch(&task.problem) => lease?,
-            _ = cancellation.cancelled() => { self.cancel_task(task)?; return Ok(()); }
-        };
-        let incident = incident(&task.problem, lease.current()?)?;
-        self.owner()?;
-        let (permit, timeout_secs) = self.with_state(|s| {
-            let current = s.task(&task.id)?;
-            if current.revision != task.revision {
-                return Err(RecoveryError::Conflict);
-            }
-            let record = s.approval(&current)?;
-            let operation = current
-                .operation
-                .as_ref()
-                .ok_or_else(|| service("missing operation"))?;
-            s.dispatch_phase(operation.clone(), false)?;
-            let permit = s.approvals.consume(
-                &record.request.request_id,
-                operation,
-                &record.request.policy,
-                self.clock.now_ms() / 1000,
-            )?;
-            #[cfg(test)]
-            crash_boundary("approval_consumed");
-            let approval = s
-                .approvals
-                .get(&record.request.request_id)
-                .cloned()
-                .ok_or_else(|| service("consumed approval missing"))?;
-            let authority = TargetAuthority {
-                target_id: task.problem.target_id.clone(),
-                epoch: format!("owner-{}-{}", std::process::id(), self.clock.now_ms()),
-            };
-            let effects = match s.apply(
-                RecoveryCommand::AuthorizeExecution {
-                    task_id: task.id.clone(),
-                    revision: task.revision,
-                    permit,
-                    approval,
-                    observation,
-                    incident,
-                    authority,
-                },
-                self.clock.now_ms(),
-            ) {
-                Ok(effects) => effects,
-                Err(error) => {
-                    let approval = s
-                        .approvals
-                        .recover_unknown(&record.request.request_id, self.clock.now_ms() / 1000)?;
-                    s.event(
-                        RecoveryEvent::ApprovalResolved {
-                            task_id: task.id.clone(),
-                            revision: task.revision,
-                            record: approval,
-                        },
-                        self.clock.now_ms(),
-                    )?;
-                    s.not_dispatched(&task.id, &self.config, self.clock.now_ms())?;
-                    return Err(error);
-                }
-            };
-            let (permit, timeout_secs) = effects
-                .into_iter()
-                .find_map(|effect| match effect {
-                    RecoveryEffect::Execute {
-                        permit,
-                        timeout_secs,
-                        ..
-                    } => Some((permit, timeout_secs)),
-                    _ => None,
-                })
-                .ok_or_else(|| service("committed execution effect missing"))?;
-            #[cfg(test)]
-            crash_boundary("execution_authorized");
-            if let Err(error) = s.dispatch_phase(permit.operation().clone(), true) {
-                s.approvals.complete(
-                    permit,
-                    ExecutionOutcome::Unknown,
-                    "dispatch boundary persistence failed".into(),
-                    self.clock.now_ms() / 1000,
-                )?;
-                return Err(error);
-            }
-            s.dispatch_pending = true;
-            Ok((permit, timeout_secs))
-        })?;
-        let dispatch = Arc::new(ExecutionDispatch {
-            service: self.clone(),
-            task_id: task.id.clone(),
-            lease: Mutex::new(Some(lease)),
-        });
-        let result = bounded(
-            self.backend.execute(
-                AuthorizedRepair {
-                    permit: &permit,
-                    timeout_secs,
-                    dispatch_guard: Some(dispatch.clone()),
-                },
-                cancellation.clone(),
-            ),
-            cancellation,
-            timeout_secs,
-        )
-        .await;
-        // Routing failures and trusted embedded backends may not enter the network
-        // client. The fallback still retains the gate until their call has ended.
-        crate::integrations::extensions::DispatchGuard::release(dispatch.as_ref());
-        let operation = permit.operation();
-        let execution_trace: Vec<_> = self.read_state(|s| {
-            Ok(s.workflow
-                .repair_action(&operation.operation_id)
-                .cloned()
-                .into_iter()
-                .collect())
-        })?;
-        let receipt = match result {
-            Ok(receipt)
-                if receipt.operation_id == operation.operation_id
-                    && receipt.target_id == operation.target
-                    && receipt.execution_trace == execution_trace
-                    && (receipt.outcome == RepairExecutionOutcome::Unknown
-                        || receipt.executor_stopped)
-                    && !receipt.evidence_refs.is_empty()
-                    && receipt.evidence_refs.len() <= 32
-                    && receipt.summary.len() <= 8192 =>
-            {
-                receipt
-            }
-            result => RepairReceipt {
-                execution_trace,
-                operation_id: operation.operation_id.clone(),
-                target_id: operation.target.clone(),
-                outcome: RepairExecutionOutcome::Unknown,
-                executor_stopped: false,
-                evidence_refs: vec![format!("approval:{}", permit.request_id())],
-                summary: match result {
-                    Err(error) => bounded_reason(&error),
-                    Ok(_) => "invalid or unbound executor receipt".into(),
-                },
-            },
-        };
-        self.with_state(|s| {
-            let outcome = match receipt.outcome {
-                RepairExecutionOutcome::Executed => ExecutionOutcome::Executed,
-                RepairExecutionOutcome::Failed => ExecutionOutcome::Failed,
-                RepairExecutionOutcome::Unknown => ExecutionOutcome::Unknown,
-            };
-            let approval = s.approvals.complete(
-                permit,
-                outcome,
-                receipt.summary.clone(),
-                self.clock.now_ms() / 1000,
-            )?;
-            #[cfg(test)]
-            crash_boundary("approval_completed");
-            let current = s.task(&task.id)?;
-            s.event(
-                RecoveryEvent::ExecutionRecorded {
-                    task_id: task.id.clone(),
-                    revision: current.revision,
-                    receipt,
-                    approval,
-                },
-                self.clock.now_ms(),
-            )?;
-            Ok(())
-        })
+    ) -> Result<Vec<recuvora_core::recovery::workflow::ExperienceJob>, RecoveryError> {
+        self.read_state(|s| Ok(s.session.pending_experiences()))
     }
     pub fn check_result(
         &self,
@@ -1252,52 +544,16 @@ impl RecoveryService {
         self.accepting()?;
         self.owner()?;
         self.with_state(|s| {
-            let task = s.task(id)?;
-            let approval = s.approval(&task)?;
-            s.event(
-                RecoveryEvent::ResultChecked {
+            s.apply(
+                SessionCommand::CheckResult {
                     task_id: id.into(),
                     revision,
-                    execution: execution.clone(),
-                    verification: verification.clone(),
-                    actor: actor.clone(),
-                    approval: approval.clone(),
+                    execution,
+                    verification,
+                    actor,
                 },
                 self.clock.now_ms(),
             )?;
-            if approval.state == ApprovalState::Unknown
-                && execution.outcome != CheckedExecution::Unknown
-            {
-                #[cfg(test)]
-                crash_boundary("result_check_saved");
-                let outcome = if execution.outcome == CheckedExecution::Executed {
-                    ExecutionOutcome::Executed
-                } else {
-                    ExecutionOutcome::Failed
-                };
-                let approval = s.approvals.reconcile_unknown(
-                    &approval.request.request_id,
-                    outcome,
-                    "independent executor evidence committed to recovery".into(),
-                    actor.clone(),
-                    self.clock.now_ms() / 1000,
-                )?;
-                #[cfg(test)]
-                crash_boundary("result_check_reconciled");
-                let current = s.task(id)?;
-                s.event(
-                    RecoveryEvent::ResultChecked {
-                        task_id: id.into(),
-                        revision: current.revision,
-                        execution,
-                        verification,
-                        actor,
-                        approval,
-                    },
-                    self.clock.now_ms(),
-                )?;
-            }
-            s.deliver(self.clock.now_ms())?;
             s.task(id)
         })
     }
@@ -1311,21 +567,10 @@ impl RecoveryService {
             // write or external file change in any participating aggregate.
             current.journal.prepare_close().map_err(service)?;
             current.dispatch.prepare_close().map_err(service)?;
-            current.approvals.prepare_close()?;
-            current.knowledge.prepare_close().map_err(service)?;
-            // Keep nonterminal and Unknown durable ownership even after dropping locks.
-            let terminal = current.workflow.tasks().all(|task| task.stage.terminal())
-                && !current.approvals.list().iter().any(|record| {
-                    matches!(
-                        record.state,
-                        ApprovalState::Executing | ApprovalState::Unknown
-                    )
-                });
+            let terminal = current.session.releasable();
             if terminal && let Some(lease) = lock(&self.ownership)?.as_mut() {
                 lease.release()?;
             }
-            current.approvals.finish_close();
-            current.knowledge.finish_close();
             current.journal.finish_close();
             current.dispatch.finish_close();
             state.take();
@@ -1340,6 +585,205 @@ impl Drop for RecoveryService {
         let _ = self.calls.close();
     }
 }
+
+struct Platform {
+    service: Arc<RecoveryService>,
+    cancellation: Cancellation,
+    dispatch: Mutex<Option<Arc<ExecutionDispatch>>>,
+}
+impl Platform {
+    fn new(service: Arc<RecoveryService>, cancellation: Cancellation) -> Self {
+        Self {
+            service,
+            cancellation,
+            dispatch: Mutex::new(None),
+        }
+    }
+}
+fn port(error: RecoveryError) -> EngineError {
+    match error {
+        RecoveryError::Conflict => EngineError::Conflict,
+        RecoveryError::Busy => EngineError::Busy,
+        RecoveryError::Stopped => EngineError::Stopped,
+        RecoveryError::Capacity => EngineError::Capacity,
+        RecoveryError::Invalid(s) => EngineError::Invalid(s),
+        other => EngineError::Port(other.to_string()),
+    }
+}
+impl RecoveryPlatform for Platform {
+    fn config(&self) -> &RecoveryConfig {
+        &self.service.config
+    }
+    fn now_ms(&self) -> u64 {
+        self.service.clock.now_ms()
+    }
+    fn cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
+    }
+    fn task(&self, id: &str) -> EngineResult<RecoveryTask> {
+        self.service.owner().map_err(port)?;
+        self.service.with_state(|s| s.task(id)).map_err(port)
+    }
+    fn approval(&self, id: &str) -> EngineResult<Option<ApprovalRecord>> {
+        self.service.approval(id).map_err(port)
+    }
+    fn pending_experiences(&self) -> EngineResult<Vec<ExperienceJob>> {
+        self.service.pending_experiences().map_err(port)
+    }
+    fn commit(&self, command: SessionCommand) -> EngineResult<Vec<SessionEffect>> {
+        if !matches!(
+            &command,
+            SessionCommand::BeginSummary { .. }
+                | SessionCommand::Summarized { .. }
+                | SessionCommand::Deliver
+        ) {
+            self.service.owner().map_err(port)?;
+        }
+        self.service
+            .with_state(|s| s.apply(command, self.now_ms()))
+            .map_err(port)
+    }
+    fn inspect(&self, timeout: u64) -> CapabilityFuture<'_, TargetObservation> {
+        Box::pin(async move {
+            bounded(
+                self.service
+                    .backend
+                    .inspect(&self.config().target, self.cancellation.clone()),
+                self.cancellation.clone(),
+                timeout,
+            )
+            .await
+            .map_err(port)
+        })
+    }
+    fn review(&self, input: ReviewInput, timeout: u64) -> CapabilityFuture<'_, ReviewOutput> {
+        Box::pin(async move {
+            bounded(
+                self.service
+                    .backend
+                    .review(input, self.cancellation.clone()),
+                self.cancellation.clone(),
+                timeout,
+            )
+            .await
+            .map_err(port)
+        })
+    }
+    fn acquire_execution<'a>(
+        &'a self,
+        task: &'a RecoveryTask,
+    ) -> CapabilityFuture<'a, ExecutionContext> {
+        Box::pin(async move {
+            let guard = self
+                .service
+                .incident_guard
+                .get()
+                .ok_or_else(|| EngineError::Port("incident guard not bound".into()))?;
+            let lease = tokio::select! {lease=guard.acquire_dispatch(&task.problem)=>lease.map_err(port)?,_=self.cancellation.cancelled()=>return Err(EngineError::Stopped)};
+            let current = incident(&task.problem, lease.current().map_err(port)?).map_err(port)?;
+            self.service.owner().map_err(port)?;
+            self.service
+                .with_state(|s| {
+                    if s.task(&task.id)?.revision != task.revision {
+                        return Err(RecoveryError::Conflict);
+                    }
+                    s.dispatch_phase(
+                        task.operation.clone().ok_or(RecoveryError::Conflict)?,
+                        false,
+                    )
+                })
+                .map_err(port)?;
+            *lock(&self.dispatch).map_err(port)? = Some(Arc::new(ExecutionDispatch {
+                service: self.service.clone(),
+                task_id: task.id.clone(),
+                lease: Mutex::new(Some(lease)),
+            }));
+            Ok(ExecutionContext {
+                incident: current,
+                authority: TargetAuthority {
+                    target_id: task.problem.target_id.clone(),
+                    epoch: format!("owner-{}-{}", std::process::id(), self.now_ms()),
+                },
+            })
+        })
+    }
+    fn execute<'a>(
+        &'a self,
+        permit: &'a approval::ExecutionPermit,
+        timeout_secs: u64,
+    ) -> CapabilityFuture<'a, RepairReceipt> {
+        Box::pin(async move {
+            let dispatch = lock(&self.dispatch)
+                .map_err(port)?
+                .clone()
+                .ok_or(EngineError::Conflict)?;
+            self.service
+                .with_state(|s| {
+                    s.dispatch_phase(permit.operation().clone(), true)?;
+                    s.dispatch_pending = true;
+                    Ok(())
+                })
+                .map_err(port)?;
+            bounded(
+                self.service.backend.execute(
+                    AuthorizedRepair {
+                        permit,
+                        timeout_secs,
+                        dispatch_guard: Some(dispatch),
+                    },
+                    self.cancellation.clone(),
+                ),
+                self.cancellation.clone(),
+                timeout_secs,
+            )
+            .await
+            .map_err(port)
+        })
+    }
+    fn release_execution(&self) {
+        if let Ok(mut dispatch) = self.dispatch.lock()
+            && let Some(dispatch) = dispatch.take()
+        {
+            crate::integrations::extensions::DispatchGuard::release(dispatch.as_ref());
+        }
+    }
+    fn verify(
+        &self,
+        input: VerificationInput,
+        timeout: u64,
+    ) -> CapabilityFuture<'_, BusinessVerification> {
+        Box::pin(async move {
+            bounded(
+                self.service
+                    .backend
+                    .verify(input, self.cancellation.clone()),
+                self.cancellation.clone(),
+                timeout,
+            )
+            .await
+            .map_err(port)
+        })
+    }
+    fn summarize(
+        &self,
+        job: ExperienceJob,
+        timeout: u64,
+    ) -> CapabilityFuture<'_, ExperienceReport> {
+        Box::pin(async move {
+            bounded(
+                self.service.backend.summarize(
+                    job,
+                    self.config().clone(),
+                    self.cancellation.clone(),
+                ),
+                self.cancellation.clone(),
+                timeout,
+            )
+            .await
+            .map_err(port)
+        })
+    }
+}
 struct ExecutionDispatch {
     service: Arc<RecoveryService>,
     task_id: String,
@@ -1348,7 +792,7 @@ struct ExecutionDispatch {
 impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
     fn prepare_repair_action(
         &self,
-        action: &crate::control::recovery::knowledge::RepairArtifact,
+        action: &recuvora_core::recovery::knowledge::RepairArtifact,
     ) -> Result<(), crate::integrations::extensions::ExtensionError> {
         use crate::integrations::extensions::ExtensionError;
         self.validate()?;
@@ -1361,10 +805,9 @@ impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
             .task(&self.task_id)
             .map_err(|e| ExtensionError::Rejected(e.to_string()))?;
         state
-            .event(
-                RecoveryEvent::RepairActionPrepared {
+            .apply(
+                SessionCommand::PrepareAction {
                     task_id: task.id,
-                    revision: task.revision,
                     action: action.clone(),
                 },
                 self.service.clock.now_ms(),
@@ -1383,43 +826,17 @@ impl crate::integrations::extensions::DispatchGuard for ExecutionDispatch {
             let state = state.as_mut().ok_or(RecoveryError::Stopped)?;
             state.root_lock.validate()?;
             let task = state.task(&self.task_id)?;
-            incident(&task.problem, lease.current()?)?;
-            if task.stage != RecoveryStage::Executing || !state.dispatch_pending {
-                return Err(RecoveryError::Conflict);
-            }
-            let record = state.approval(&task)?;
-            if record.state != ApprovalState::Executing
-                || self.service.clock.now_ms() / 1000 >= record.request.expires_at
-            {
+            let incident = incident(&task.problem, lease.current()?)?;
+            if !state.dispatch_pending {
                 return Err(RecoveryError::Conflict);
             }
             state.journal.available().map_err(service)?;
             state.dispatch.available().map_err(service)?;
-            state.approvals.ensure_current()?;
-            state.knowledge.available().map_err(service)?;
-            let artifact = task
-                .operation
-                .as_ref()
-                .and_then(|operation| state.workflow.repair_action(&operation.operation_id));
-            if let Some(artifact) = artifact {
-                state
-                    .knowledge
-                    .state()
-                    .validate_artifact(artifact)
-                    .map_err(service)?;
-                if state
-                    .workflow
-                    .is_quarantined(&artifact.id, artifact.version)
-                    || state
-                        .knowledge
-                        .state()
-                        .is_quarantined(&artifact.id, artifact.version)
-                {
-                    return Err(RecoveryError::Invalid(
-                        "action quarantined before send".into(),
-                    ));
-                }
-            }
+            state.session.validate_dispatch(
+                &self.task_id,
+                &incident,
+                self.service.clock.now_ms(),
+            )?;
             Ok(())
         };
         check().map_err(|error| {
@@ -1474,14 +891,6 @@ fn incident(
         _ => Err(RecoveryError::Conflict),
     }
 }
-fn bounded_reason(error: &impl std::fmt::Display) -> String {
-    let text = error.to_string();
-    let mut end = text.len().min(4096);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].into()
-}
 async fn bounded<T>(
     future: RecoveryFuture<'_, T>,
     cancellation: Cancellation,
@@ -1498,7 +907,7 @@ async fn bounded<T>(
 fn crash_boundary(name: &str) {
     if std::env::var("RECUVORA_RECOVERY_CRASH_BOUNDARY").as_deref() == Ok(name) {
         // Used only by a dedicated test subprocess. No destructor or shutdown
-        // may repair the interrupted cross-domain commit before restart.
+        // may repair the interrupted aggregate commit before restart.
         std::process::exit(93);
     }
 }

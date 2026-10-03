@@ -1,6 +1,6 @@
 # Host 测试
 
-本目录验证应用入口、配置边界、HTTP 接口约定和 Host control 管理与 Core 业务计算接入，不自动运行 Core 自身测试套件。目标以[Cargo.toml](../Cargo.toml)为准；需要私有宿主接口的用例仅在测试构建中引用。
+本目录验证应用入口、配置边界、HTTP 接口约定和 Core 管理与 Core 业务计算接入，不自动运行 Core 自身测试套件。目标以[Cargo.toml](../Cargo.toml)为准；需要私有宿主接口的用例仅在测试构建中引用。
 
 | 范围 | 检查内容 |
 | --- | --- |
@@ -25,7 +25,7 @@
 
 派发门回归验证网络握手后的最终复核、拒绝零派发和发送后立即释放；`recovery_incident_guard` 使用实际 MonitorIncidentGuard 和 HTTP 替身验证门内过期证据不能派发，观察/确认提交等待或拒绝忙态，定时器不会因持门阻塞。
 
-Core 作为生产依赖编译；文件路径保护与测试临时目录规则由 Host 实现和验证。Host 维护本机文件动作的边界测试，control_* 测试维护状态、授权与提交约束，Core 单独维护无状态业务计算测试。`repair_backend` 使用隔离网络节点验证实际 Host 初始化、人工审批、正常执行、回执丢失后的执行结果核实、修复经验中的实际产物隔离与关闭后重开；这些检查不能代替真实节点或业务验收。
+Core 作为生产依赖编译；文件路径保护与测试临时目录规则由 Host 实现和验证。Host 维护本机文件动作的边界测试，control_incidents 测试维护故障与检查点约束，Core 单独维护审批、提交、知识、恢复与引擎测试。`repair_backend` 使用隔离网络节点验证实际 Host 初始化、人工审批、正常执行、回执丢失后的执行结果核实、修复经验中的实际产物隔离与关闭后重开；这些检查不能代替真实节点或业务验收。
 
 ## Cargo检查
 
@@ -61,4 +61,4 @@ cargo test --locked --test ui_contract external_ui_assets_and_http_contract -- -
 
 `repair_backend` 的统一修复场景覆盖真实 Host 适配器与回环节点替身：完整会话审批、具体动作先保存、第二次变更拒绝、独立业务验收、无脚本经验、经验再次匹配、总结失败三次停止及显式重试、重开保留总结次数、超大合法经验的 64 KiB 总结投影，以及丢失执行回执后的 Unknown 核实。内部 [summary_context.rs](summary_context.rs) 回归扫描最大动作、前提、证据和 JSON 转义的临界组合，核对整字段省略元数据也包含在 prompt 预算内。替身不证明实际提供方、脚本沙箱或真实业务恢复。
 
-control_approval、control_commit、control_incidents、control_knowledge、control_recovery 集中维护控制规则回归，包括硬政策、一次许可、错误回执、历史完整性、Unknown 隔离、经验幂等以及有界请求接入。
+control_incidents 维护故障事实与检查点回归。审批、提交、知识、任务与引擎规则测试在 Core；本库 recovery_commits 验证实际聚合存储、中断与确认丢失，网络测试验证能力接入。

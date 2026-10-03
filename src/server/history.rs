@@ -1,6 +1,6 @@
 //! Bounded list projections and explicit detail reads; durable authority stays in recovery.
 use super::*;
-use crate::control::recovery::approval::{ApprovalRecord, ApprovalState};
+use recuvora_core::recovery::approval::{ApprovalRecord, ApprovalState};
 
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]

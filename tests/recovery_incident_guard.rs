@@ -1,6 +1,8 @@
-use recuvora_host::control::recovery::{
-    approval::{ApprovalDecision, ApprovalPolicy, ApprovalState, ReviewerConfig},
-    incidents::{IncidentKind, IncidentRecord, IncidentStatus, SignalCondition},
+use recuvora_core::recovery::approval::{
+    ApprovalDecision, ApprovalPolicy, ApprovalState, ReviewerConfig,
+};
+use recuvora_host::control::recovery::incidents::{
+    IncidentKind, IncidentRecord, IncidentStatus, SignalCondition,
 };
 use recuvora_host::integrations::recovery::*;
 use recuvora_host::monitoring::*;

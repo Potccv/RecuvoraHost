@@ -40,7 +40,7 @@ pub enum HostError {
     Lifecycle(String),
 }
 
-/// Starts shared services and connects external adapters to Host control.
+/// Starts shared services and connects external adapters to the Core recovery engine.
 pub struct HostRuntime {
     harnesses: Option<Arc<HarnessRegistry>>,
     extensions: Option<Arc<ExtensionRegistry>>,
@@ -331,7 +331,7 @@ pub fn load_repair_config(
     if needs_target
         && matches!(
             &config.policy.reviewer,
-            crate::control::recovery::approval::ReviewerConfig::HumanThenHarness { .. }
+            recuvora_core::recovery::approval::ReviewerConfig::HumanThenHarness { .. }
         )
     {
         return Err(WorkflowError::Invalid(

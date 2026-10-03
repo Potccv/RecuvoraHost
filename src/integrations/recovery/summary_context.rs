@@ -1,6 +1,6 @@
 //! Bounded, read-only projection for the non-authoritative summary session.
 use super::{RecoveryError, service};
-use crate::control::recovery::{
+use recuvora_core::recovery::{
     knowledge::{RepairArtifact, RepairOutcome},
     workflow::{
         BusinessVerification, CheckedExecution, ExperienceJob, HarnessRepairRequest, RecoveryStage,

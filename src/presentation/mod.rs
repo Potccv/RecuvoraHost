@@ -1,4 +1,4 @@
-//! Pure, shared CLI and HTTP projections of Host control facts.
+//! Pure, shared CLI and HTTP projections of Core records and Host facts.
 use crate::harnesses::{
     ClientProjectGrouping, ConversationVisibility, HarnessError, HarnessProject,
 };

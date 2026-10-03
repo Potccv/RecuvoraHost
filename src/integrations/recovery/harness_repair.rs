@@ -1,6 +1,6 @@
 //! A bounded Harness session uses trusted Host tools; final model text is not a receipt.
 use super::node_backend::*;
-use crate::control::recovery::{
+use recuvora_core::recovery::{
     knowledge::{ExperienceReport, Scriptability},
     workflow::{ExperienceJob, HarnessRepairRequest},
 };

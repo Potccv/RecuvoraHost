@@ -1,6 +1,6 @@
 use super::journal::Journal;
-use crate::control::operation::Prepared;
-pub use crate::control::recovery::approval::*;
+use recuvora_core::operation::Prepared;
+pub use recuvora_core::recovery::approval::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -57,12 +57,6 @@ impl ApprovalStore {
     }
     pub fn ensure_current(&self) -> Result<(), ApprovalError> {
         Ok(self.journal.available()?)
-    }
-    pub(crate) fn prepare_close(&self) -> Result<(), ApprovalError> {
-        Ok(self.journal.prepare_close()?)
-    }
-    pub(crate) fn finish_close(&mut self) {
-        self.journal.finish_close();
     }
     #[cfg(test)]
     pub(crate) fn fail_after_commits(&mut self, successful_commits: usize, after_sync: bool) {
@@ -451,9 +445,9 @@ pub enum ApprovalError {
     Json(#[from] serde_json::Error),
 }
 
-impl From<crate::control::recovery::approval::ApprovalError> for ApprovalError {
-    fn from(error: crate::control::recovery::approval::ApprovalError) -> Self {
-        use crate::control::recovery::approval::ApprovalError as E;
+impl From<recuvora_core::recovery::approval::ApprovalError> for ApprovalError {
+    fn from(error: recuvora_core::recovery::approval::ApprovalError) -> Self {
+        use recuvora_core::recovery::approval::ApprovalError as E;
         match error {
             E::NotFound => Self::NotFound,
             E::Conflict => Self::Conflict,
@@ -486,8 +480,8 @@ impl From<super::journal::JournalError> for ApprovalError {
         }
     }
 }
-impl From<crate::control::operation::CommitError> for ApprovalError {
-    fn from(error: crate::control::operation::CommitError) -> Self {
+impl From<recuvora_core::operation::CommitError> for ApprovalError {
+    fn from(error: recuvora_core::operation::CommitError) -> Self {
         Self::Corrupt(error.to_string())
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::control::recovery::approval::{
+use recuvora_core::recovery::approval::{
     ApprovalRecord, ApprovalState, AssessmentSource, ReviewerConfig,
 };
 

@@ -142,22 +142,8 @@ path = "tests/recovery.rs"
 name = "process_recovery"
 path = "tests/process_recovery.rs"
 
-[[test]]
-name = "control_approval"
-path = "tests/control_approval.rs"
 
-[[test]]
-name = "control_commit"
-path = "tests/control_commit.rs"
 
 [[test]]
 name = "control_incidents"
 path = "tests/control_incidents.rs"
-
-[[test]]
-name = "control_knowledge"
-path = "tests/control_knowledge.rs"
-
-[[test]]
-name = "control_recovery"
-path = "tests/control_recovery.rs"

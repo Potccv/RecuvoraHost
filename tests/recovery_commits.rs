@@ -1,10 +1,10 @@
-//! Actual process exits between Host journals; no destructor completes a commit.
+//! Actual process exits around atomic recovery commits; no destructor completes a commit.
 use super::*;
-use crate::control::recovery::{
-    approval::{ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity},
+use crate::workflow_test_support::TestDir;
+use recuvora_core::recovery::{
+    approval::{ApprovalPolicy, ApprovalState, ModelAssessment, ReviewerConfig, ReviewerIdentity},
     knowledge::{ExperienceReport, RepairArtifact, Scriptability},
 };
-use crate::workflow_test_support::TestDir;
 use std::{collections::BTreeMap, io::Write};
 
 struct Clock;
@@ -52,7 +52,7 @@ impl Backend {
 impl RepairBackend for Backend {
     fn summarize(
         &self,
-        _: crate::control::recovery::workflow::ExperienceJob,
+        _: recuvora_core::recovery::workflow::ExperienceJob,
         _: RecoveryConfig,
         _: Cancellation,
     ) -> RecoveryFuture<'_, ExperienceReport> {
@@ -122,7 +122,7 @@ impl RepairBackend for Backend {
                 target_id: script.operation().target.clone(),
                 outcome: if matches!(
                     std::env::var("RECUVORA_RECOVERY_CRASH_BOUNDARY").as_deref(),
-                    Ok("result_check_reconciled" | "result_check_saved")
+                    Ok("result_check_committed")
                 ) {
                     RepairExecutionOutcome::Unknown
                 } else {
@@ -234,7 +234,7 @@ async fn crash_probe() {
         .unwrap();
     if matches!(
         std::env::var("RECUVORA_RECOVERY_CRASH_BOUNDARY").as_deref(),
-        Ok("result_check_reconciled" | "result_check_saved")
+        Ok("result_check_committed")
     ) {
         let operation = task.operation.as_ref().unwrap();
         service
@@ -307,7 +307,7 @@ async fn assert_boundary(boundary: &str) {
     let mut task = tasks[0].clone();
     let original_operation = task.operation.clone().unwrap();
     match boundary {
-        "operation_committed" | "approval_requested" => {
+        "start_committed" => {
             assert_eq!(executed_before, 0);
             assert_eq!(task.stage, RecoveryStage::Paused);
             task = service.resume(&task.id, task.revision).unwrap();
@@ -319,7 +319,7 @@ async fn assert_boundary(boundary: &str) {
             assert_eq!(task.stage, RecoveryStage::Completed);
             assert_eq!(lines(&dir.path, "executions.log"), 1);
         }
-        "approval_consumed" | "execution_authorized" => {
+        "authorization_committed" => {
             assert_eq!(executed_before, 0);
             assert_eq!(
                 task.stage,
@@ -334,45 +334,25 @@ async fn assert_boundary(boundary: &str) {
             assert_eq!(task.stage, RecoveryStage::Canceled);
             assert_eq!(lines(&dir.path, "executions.log"), 0);
         }
-        "approval_completed" => {
+        "receipt_committed" => {
             assert_eq!(executed_before, 1);
-            assert_eq!(task.stage, RecoveryStage::Unknown);
-            let operation = task.operation.as_ref().unwrap();
-            let execution = ExecutionResultCheck {
-                operation_id: operation.operation_id.clone(),
-                target_id: operation.target.clone(),
-                executor_id: config().target.executor_id,
-                outcome: CheckedExecution::Executed,
-                executor_stopped: true,
-                evidence_refs: vec!["executor:durable-receipt".into()],
-                checked_at_ms: 20_000,
-            };
-            let verification = BusinessVerification {
-                operation_id: operation.operation_id.clone(),
-                target_id: operation.target.clone(),
-                profile: config().target.verification_profile,
-                healthy: Some(true),
-                executor_stopped: true,
-                evidence_refs: vec!["independent:business-check".into()],
-                verified_at_ms: 20_000,
-            };
+            assert_eq!(task.stage, RecoveryStage::Verifying);
             task = service
-                .check_result(
-                    &task.id,
-                    task.revision,
-                    execution,
-                    verification,
-                    "operator".into(),
-                )
+                .advance(&task.id, Cancellation::new())
+                .await
                 .unwrap();
             assert_eq!(task.stage, RecoveryStage::Completed);
             assert_eq!(lines(&dir.path, "executions.log"), 1);
+            assert_eq!(lines(&dir.path, "verifications.log"), 1);
         }
-        "verification_committed" | "knowledge_committed" => {
+        "verification_committed" | "experience_committed" => {
             assert_eq!(task.stage, RecoveryStage::Completed);
             service
                 .with_state(|state| {
-                    assert_eq!(state.workflow.pending_experiences().len(), 1);
+                    assert_eq!(
+                        state.session.pending_experiences().len(),
+                        usize::from(boundary == "verification_committed")
+                    );
                     Ok(())
                 })
                 .unwrap();
@@ -394,40 +374,13 @@ async fn assert_boundary(boundary: &str) {
     service
         .with_state(|state| {
             assert_eq!(
-                state.approvals.list().len(),
+                state.session.approval_count(),
                 1,
                 "original operation has exactly one approval"
             );
-            assert!(state.workflow.pending_experiences().is_empty());
-            let knowledge = state.knowledge.snapshot();
-            assert_eq!(
-                knowledge.experiences.len(),
-                if boundary == "approval_completed" {
-                    2
-                } else {
-                    1
-                }
-            );
-            if boundary == "approval_completed" {
-                use crate::control::recovery::knowledge::RepairOutcome;
-                assert!(
-                    knowledge
-                        .experiences
-                        .iter()
-                        .any(|item| item.outcome == RepairOutcome::Unknown)
-                );
-                assert!(
-                    knowledge
-                        .experiences
-                        .iter()
-                        .any(|item| item.outcome == RepairOutcome::Verified)
-                );
-                assert!(
-                    state
-                        .knowledge
-                        .is_quarantined(&format!("{}-action", original_operation.operation_id), 1)
-                );
-            }
+            assert!(state.session.pending_experiences().is_empty());
+            let knowledge = state.session.knowledge_snapshot();
+            assert_eq!(knowledge.experiences.len(), 1);
             let ids = knowledge
                 .experiences
                 .iter()
@@ -446,32 +399,24 @@ async fn assert_boundary(boundary: &str) {
 }
 
 #[tokio::test]
-async fn crash_after_operation_commit() {
-    assert_boundary("operation_committed").await;
+async fn crash_after_atomic_start() {
+    assert_boundary("start_committed").await;
 }
 #[tokio::test]
-async fn crash_after_approval_request() {
-    assert_boundary("approval_requested").await;
+async fn crash_after_atomic_authorization() {
+    assert_boundary("authorization_committed").await;
 }
 #[tokio::test]
-async fn crash_after_approval_consume() {
-    assert_boundary("approval_consumed").await;
-}
-#[tokio::test]
-async fn crash_after_recovery_authorization() {
-    assert_boundary("execution_authorized").await;
-}
-#[tokio::test]
-async fn crash_after_approval_completion() {
-    assert_boundary("approval_completed").await;
+async fn crash_after_atomic_receipt() {
+    assert_boundary("receipt_committed").await;
 }
 #[tokio::test]
 async fn crash_after_business_verification() {
     assert_boundary("verification_committed").await;
 }
 #[tokio::test]
-async fn crash_after_knowledge_commit() {
-    assert_boundary("knowledge_committed").await;
+async fn crash_after_atomic_experience_delivery() {
+    assert_boundary("experience_committed").await;
 }
 
 async fn crash_existing(directory: &Path, boundary: &str) {
@@ -501,10 +446,10 @@ async fn crash_existing(directory: &Path, boundary: &str) {
 }
 
 #[tokio::test]
-async fn restart_finishes_not_dispatched_after_approval_reconcile_commit() {
+async fn restart_preserves_atomic_not_dispatched_result() {
     let dir = TestDir::new("not-dispatched-final-gap");
-    crash_existing(&dir.path, "approval_consumed").await;
-    crash_existing(&dir.path, "not_dispatched_reconciled").await;
+    crash_existing(&dir.path, "authorization_committed").await;
+    crash_existing(&dir.path, "not_dispatched_committed").await;
     let service = open(&dir.path);
     let task = service.tasks().unwrap().pop().unwrap();
     assert_eq!(task.stage, RecoveryStage::Canceled);
@@ -517,9 +462,9 @@ async fn restart_finishes_not_dispatched_after_approval_reconcile_commit() {
 }
 
 #[tokio::test]
-async fn restart_finishes_saved_independent_check_without_reexecuting() {
+async fn restart_preserves_atomic_independent_check_without_reexecuting() {
     let dir = TestDir::new("checked-final-gap");
-    crash_existing(&dir.path, "result_check_reconciled").await;
+    crash_existing(&dir.path, "result_check_committed").await;
     let service = open(&dir.path);
     let task = service.tasks().unwrap().pop().unwrap();
     assert_eq!(task.stage, RecoveryStage::Completed);
@@ -536,9 +481,9 @@ impl RecoveryClock for LaterClock {
     }
 }
 #[tokio::test]
-async fn restart_does_not_refresh_expired_independent_check() {
+async fn restart_preserves_committed_result_without_refreshing_evidence() {
     let dir = TestDir::new("checked-expired-gap");
-    crash_existing(&dir.path, "result_check_reconciled").await;
+    crash_existing(&dir.path, "result_check_committed").await;
     let service = RecoveryService::open_with_clock(
         dir.path.join("state"),
         config(),
@@ -554,7 +499,7 @@ async fn restart_does_not_refresh_expired_independent_check() {
         ))
         .unwrap();
     let task = service.tasks().unwrap().pop().unwrap();
-    assert_eq!(task.stage, RecoveryStage::Unknown);
+    assert_eq!(task.stage, RecoveryStage::Completed);
     assert_eq!(task.result_check.unwrap().execution.checked_at_ms, 20_000);
     assert_eq!(task.verification.unwrap().verified_at_ms, 20_000);
     assert_eq!(lines(&dir.path, "executions.log"), 1);
@@ -600,8 +545,6 @@ async fn shutdown_retry_preserves_all_journals_until_ownership_release() {
         .read_state(|state| {
             state.journal.available().map_err(super::service)?;
             state.dispatch.available().map_err(super::service)?;
-            state.approvals.ensure_current()?;
-            state.knowledge.available().map_err(super::service)?;
             Ok(())
         })
         .unwrap();
@@ -624,9 +567,9 @@ async fn shutdown_retry_preserves_all_journals_until_ownership_release() {
 }
 
 #[tokio::test]
-async fn restart_reconciles_approval_from_saved_independent_check() {
+async fn atomic_independent_check_restores_matching_approval() {
     let dir = TestDir::new("checked-before-reconcile-gap");
-    crash_existing(&dir.path, "result_check_saved").await;
+    crash_existing(&dir.path, "result_check_committed").await;
     let service = open(&dir.path);
     let task = service.tasks().unwrap().pop().unwrap();
     assert_eq!(task.stage, RecoveryStage::Completed);
@@ -638,4 +581,81 @@ async fn restart_reconciles_approval_from_saved_independent_check() {
     assert_eq!(lines(&dir.path, "executions.log"), 1);
     service.deliver_pending().unwrap();
     service.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn lost_aggregate_authorization_receipt_never_releases_execution() {
+    let dir = TestDir::new("aggregate-authorization-receipt");
+    let service = open(&dir.path);
+    let task = service.submit(problem()).unwrap();
+    service
+        .with_state(|state| {
+            state.apply(
+                SessionCommand::Start {
+                    task_id: task.id.clone(),
+                    revision: task.revision,
+                    observation: TargetObservation {
+                        target_id: config().target.target_id,
+                        facts: config().target.required_facts,
+                        evidence_refs: vec!["provider:inspection".into()],
+                        observed_at_ms: 20_000,
+                    },
+                },
+                20_000,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let approval = service.approval(&task.id).unwrap().unwrap();
+    service
+        .decide_human(
+            &task.id,
+            approval.revision,
+            ApprovalDecision::Approve,
+            "operator".into(),
+            "scoped".into(),
+        )
+        .unwrap();
+    service
+        .with_state(|state| {
+            state.journal.fail_after_commits(0, true);
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        service
+            .advance(&task.id, Cancellation::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        service.query(&task.id).unwrap().unwrap().stage,
+        RecoveryStage::AwaitingApproval
+    );
+    assert_eq!(
+        service.approval(&task.id).unwrap().unwrap().state,
+        ApprovalState::Approved
+    );
+    assert_eq!(lines(&dir.path, "executions.log"), 0);
+    assert!(
+        service
+            .advance(&task.id, Cancellation::new())
+            .await
+            .is_err()
+    );
+    assert!(service.shutdown().await.is_err());
+    drop(service);
+    let restored = open(&dir.path);
+    let task = restored.query(&task.id).unwrap().unwrap();
+    assert_eq!(task.stage, RecoveryStage::Canceled);
+    assert_eq!(
+        restored.approval(&task.id).unwrap().unwrap().state,
+        ApprovalState::Failed
+    );
+    assert_eq!(
+        task.result_check.unwrap().execution.outcome,
+        CheckedExecution::NotExecuted
+    );
+    assert_eq!(lines(&dir.path, "executions.log"), 0);
+    restored.shutdown().await.unwrap();
 }

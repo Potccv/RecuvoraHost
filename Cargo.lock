@@ -1024,8 +1024,10 @@ dependencies = [
 name = "recuvora-core"
 version = "0.2.0"
 dependencies = [
+ "im",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

@@ -4,7 +4,7 @@ mod ledger;
 mod transitions;
 mod validation;
 
-use crate::control::operation::Prepared;
+use recuvora_core::operation::Prepared;
 use serde::{Deserialize, Serialize};
 
 const MAX_CHECKPOINT_BYTES: usize = 131_072;

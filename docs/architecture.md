@@ -1,32 +1,32 @@
 # Host 架构
 
-Host 集中管理认证、故障台账、审批、执行许可、恢复流程、知识隔离、持久化和运行生命周期。Core 只提供经验匹配、修复请求生成和经验构造；Node/插件采集目标、执行动作并提供独立验收。
+Core 主导恢复业务流程；Host 提供故障、可信事实、持久化、Harness/节点能力、认证及运行生命周期。依赖方向是 Host → Core，运行时由 Core 调用 Host 注入的能力。
 
 ## 模块职责
 
 | 组件 | 责任 |
 | --- | --- |
-| Core 公共业务 API | `matching_experiences`、`prepare_repair`、`build_experience`，返回普通业务数据 |
-| Host [control](../src/control/README.md) | 输入与政策校验、故障/审批/恢复/知识权威状态、一次许可、隔离、提交绑定、重放 |
-| Host persistence | 配置和日志绑定、原子版本比较、可靠同步与提交确认 |
-| Host RecoveryService | 协调 control、持久提交、目标所有权、当前故障门及外部调用 |
-| Host runtime/boot | 服务装配、配置、定时处理、取消监督与关闭 |
+| Core RecoveryEngine / RecoverySession | 经验匹配、审批、执行编排、验收判定、经验生成与原子领域提案 |
+| Host [control](../src/control/README.md) | IncidentLedger 故障台账与监控检查点 |
+| Host persistence | 配置和日志绑定、版本比较、可靠同步、提交确认 |
+| Host RecoveryService | 实现 Core 能力接口，管理聚合日志、当前故障门、实际派发保护及监督调用 |
+| Host runtime/boot | 装配、配置、调度、取消与关闭 |
 | Host protocol/integrations | 有界网络消息、schema、TLS、路由、节点和 Harness 适配 |
-| Node/插件 | 实际采集、动作、执行者监督、独立业务验收 |
-| UI/CLI/HTTP | 经认证服务查询与提交管理请求，不自行产生授权事实 |
+| Node/插件 | 实际采集、动作执行、执行者监督与独立业务验收 |
+| UI/CLI/HTTP | 认证后的查询与管理请求，不产生权威事实 |
 
-## 业务与管理接口
+## 恢复接口
 
-`control::recovery::workflow::RecoveryState` 在准备修复时调用 Core `prepare_repair`。知识管理调用 Core `matching_experiences`，经验交付从已提交任务提取结果、动作和验收证据后调用 Core `build_experience`。Host 重导出共享业务类型，以保持各服务使用同一数据定义。
+`RecoveryService::advance` 在监督范围内调用 Core `RecoveryEngine::advance`。私有 Platform 实现 `RecoveryPlatform`，不包含恢复阶段循环。Core 发起观察、审核、修复、验收和总结，Host 使用 `RepairBackend` 完成实际能力调用并返回证据。
 
-Core 输出没有权限效力。Host 校验当前故障、环境、政策和审批期限，先可靠保存审批消费，再保存恢复授权；确认两项事实后才交付后端许可。具体动作提交后，实际网络发送前继续复核条件。细则见[审批](approval.md)和[提交约束](control/commits.md)。
+`RecoverySession` 的完整提案保存到单一 `recovery.jsonl`；审批和任务的相关变化一起确认。`dispatch.jsonl` 单独保存 Host 的物理派发边界；它不参与业务阶段决策，只为中断后独立证明尚未派发提供依据。具体要求见[提交与历史](control/commits.md)。
 
-`IncidentLedger`、`ApprovalLedger`、`KnowledgeState` 与 `RecoveryState` 位于 Host control，状态没有可绕过校验的反序列化入口。`CommitReceipt` 只能由可信持久层在可靠提交后确认。恢复历史重复合法性检查，不产生新许可或派发动作。恢复服务保留跨日志提交顺序及中断续接，当前没有跨日志统一事务。
+Host 保持当前故障保护、目标所有权和最终网络发送复核；Core 的许可不替代物理保护。模型只提供建议，实际执行和独立验收事实经 Core 判定后形成结果。业务阶段与权威规则由 Core 维护，Host 不复制这些实现。
 
 ## 服务入口和关闭
 
-`start_recovery` 按显式配置启动恢复调度，并从稳定 `ownership_dir` 绑定共享目标所有权。`open_recovery(data_dir, config, executor)` 仅打开低层服务；嵌入方负责绑定 `TargetOwnership`、`IncidentGuard`、认证与关闭，见 [Rust API](api/rust.md)。
+`start_recovery` 按显式配置启动调度并绑定稳定 `ownership_dir`。低层 `open_recovery(data_dir, config, executor)` 只打开服务，嵌入方负责绑定 `TargetOwnership`、`IncidentGuard`、认证与关闭，见[Rust API](api/rust.md)。
 
-关闭先停止新请求和调度，再请求取消并等待恢复、监控和远端调用，保存最终事实后释放服务和文件锁。等待超过 30 秒保留错误和管理权，允许继续等待。断连或取消不证明节点执行者已停止；Unknown 和不确定提交保留目标归属。
+关闭先停止新请求和调度，再请求取消并排空在途调用；同步全部日志，确认 Core 聚合可以释放后才释放持久归属和文件句柄。同步或释放失败保留句柄，允许重试。断连、取消及等待超时不证明执行者停止；Unknown 或不确定提交保留目标归属。
 
-同一实际目标使用相同规范身份和稳定所有权目录，不得以更换恢复目录绕过未结束任务或 Unknown。独立文本修复与自动恢复使用独立入口，禁止同时管理同一目标。具体限制见[恢复流程](recovery.md)。
+同一实际目标必须使用相同规范身份与稳定所有权目录，不能更换恢复目录绕过未结束任务。独立文本修复和自动恢复不得同时管理同一目标。

@@ -17,18 +17,6 @@ impl<K: Ord + Clone, V: Clone> Map<K, V> {
     {
         self.0.get(key).map(AsRef::as_ref)
     }
-    pub(crate) fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
-    where
-        K: Borrow<Q>,
-    {
-        self.0.contains_key(key)
-    }
-    pub(crate) fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
-    where
-        K: Borrow<Q>,
-    {
-        self.0.get_mut(key).map(Arc::make_mut)
-    }
     pub(crate) fn insert(&mut self, key: K, value: V) {
         self.0.insert(key, Arc::new(value));
     }

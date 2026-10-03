@@ -23,7 +23,7 @@ pub use node_backend::NodeRepairBackend;
 pub use scheduler::{IncidentTrigger, RecoveryScheduler};
 pub use service::RecoveryService;
 
-pub use crate::control::recovery::workflow::{
+pub use recuvora_core::recovery::workflow::{
     BusinessVerification, CheckedExecution, ExecutionResultCheck, ProblemContext, RecoveryConfig,
     RecoveryStage, RecoveryTask, RepairExecutionOutcome, RepairReceipt, ResultCheckRecord,
     TargetBinding, TargetObservation,
@@ -52,9 +52,9 @@ pub enum RecoveryError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 }
-impl From<crate::control::recovery::workflow::RecoveryError> for RecoveryError {
-    fn from(value: crate::control::recovery::workflow::RecoveryError) -> Self {
-        use crate::control::recovery::workflow::RecoveryError as E;
+impl From<recuvora_core::recovery::workflow::RecoveryError> for RecoveryError {
+    fn from(value: recuvora_core::recovery::workflow::RecoveryError) -> Self {
+        use recuvora_core::recovery::workflow::RecoveryError as E;
         match value {
             E::Busy => Self::Busy,
             E::Conflict => Self::Conflict,
@@ -64,8 +64,8 @@ impl From<crate::control::recovery::workflow::RecoveryError> for RecoveryError {
         }
     }
 }
-impl From<crate::control::recovery::approval::ApprovalError> for RecoveryError {
-    fn from(value: crate::control::recovery::approval::ApprovalError) -> Self {
+impl From<recuvora_core::recovery::approval::ApprovalError> for RecoveryError {
+    fn from(value: recuvora_core::recovery::approval::ApprovalError) -> Self {
         Self::Approval(value.into())
     }
 }
@@ -86,5 +86,21 @@ impl RecoveryClock for SystemRecoveryClock {
             .unwrap_or_default()
             .as_millis()
             .min(u64::MAX as u128) as u64
+    }
+}
+
+impl From<recuvora_core::recovery::engine::EngineError> for RecoveryError {
+    fn from(value: recuvora_core::recovery::engine::EngineError) -> Self {
+        use recuvora_core::recovery::engine::EngineError as E;
+        match value {
+            E::Conflict => Self::Conflict,
+            E::Busy => Self::Busy,
+            E::Stopped => Self::Stopped,
+            E::Capacity => Self::Capacity,
+            E::Invalid(s) => Self::Invalid(s),
+            E::Recovery(e) => e.into(),
+            E::Approval(e) => e.into(),
+            other => service(other),
+        }
     }
 }

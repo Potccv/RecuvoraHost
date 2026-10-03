@@ -1,9 +1,9 @@
-# 控制参考
+# 领域接入参考
 
-本组文档描述 Host control 的权威规则；服务装配见[架构](../architecture.md)，使用入口见 [Rust API](../api/rust.md)。
+本组文档维护 Host 如何保存领域提案、传入事实并执行能力，不复制 Core 领域实现。
 
-- [审批与许可](approval.md)：审核、期限、一次消费和执行绑定。
-- [恢复状态](recovery.md)：阶段、证据、结果与独立经验交付。
-- [提交与历史](commits.md)：跨域顺序、重放、持久前提和中断边界。
+- [审批接入](approval.md)：认证身份、审核能力与许可派发。
+- [恢复接入](recovery.md)：Core 引擎与 Host 能力。
+- [提交与历史](commits.md)：聚合日志、派发边界、重开与关闭。
 
-源码导航见[control](../../src/control/README.md)，开发规范见 [AGENTS](AGENTS.md)。
+故障台账由本库 [control](../../src/control/README.md) 维护，服务入口见[Rust API](../api/rust.md)。

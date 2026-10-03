@@ -1,4 +1,4 @@
-//! Trusted persistence for Host control aggregates.
+//! Trusted persistence for Core domain proposals and Host incident facts.
 pub mod approval;
 pub mod incidents;
 pub mod journal;

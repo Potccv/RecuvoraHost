@@ -1,6 +1,6 @@
 //! Script wire format and interpreter restrictions belong to the Host adapter.
 use super::RecoveryError;
-use crate::control::recovery::knowledge::RepairArtifact;
+use recuvora_core::recovery::knowledge::RepairArtifact;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

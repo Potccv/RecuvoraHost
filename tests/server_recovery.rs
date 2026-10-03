@@ -1,7 +1,7 @@
 use super::*;
-use crate::control::recovery::approval::ReviewerConfig;
 use crate::integrations::recovery::*;
 use crate::runtime::operation::Cancellation;
+use recuvora_core::recovery::approval::ReviewerConfig;
 
 struct PendingBackend;
 impl IncidentGuard for PendingBackend {

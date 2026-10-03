@@ -1,14 +1,14 @@
 # 审批与执行
 
-Host control `ApprovalPolicy` 规定目标、动作种类、用户委托范围、审核人及有效期。human（人工）、harness（AI）、human_then_harness（先等待人工，到期转交 AI）三种审核规则均由 Host control 校验。配置登记、模型回复、插件声明、UI 状态和人工确认故障都不会生成执行许可。
+Core `ApprovalPolicy` 规定目标、动作种类、用户委托范围、审核人及有效期。human（人工）、harness（AI）、human_then_harness（先等待人工，到期转交 AI）三种审核规则均由 Core 校验。配置登记、模型回复、插件声明、UI 状态和人工确认故障都不会生成执行许可。
 
-Host 保存 control 校验后的完整 ProposedOperation、ApprovalRecord、审核身份及提交请求。执行与审核使用独立会话，AI 审核会话隐藏且没有工具。只有已保存的批准仍有效、实际操作与批准内容完全一致时，才能使用一次 ExecutionPermit。`AuthorizedRepair` 不能由 JSON 构造。
+Host 保存 Core 校验后的完整 ProposedOperation、ApprovalRecord、审核身份及提交请求。执行与审核使用独立会话，AI 审核会话隐藏且没有工具。只有已保存的批准仍有效、实际操作与批准内容完全一致时，才能使用一次 ExecutionPermit。`AuthorizedRepair` 不能由 JSON 构造。
 
 ## 自动恢复流程
 
-`/recovery/tasks/{id}/decision` 中的 revision 是审批记录版本号；decision 使用 Host control 的 approve/deny/escalate（批准/拒绝/转交）。actor 来自 Bearer 令牌对应的配置身份 operator。HTTP 返回完整 Host control 审批记录，摘要不足以支持审批决定。
+`/recovery/tasks/{id}/decision` 中的 revision 是审批记录版本号；decision 使用 Core 的 approve/deny/escalate（批准/拒绝/转交）。actor 来自 Bearer 令牌对应的配置身份 operator。HTTP 返回完整 Core 审批记录，摘要不足以支持审批决定。
 
-决定请求只保存决定，已启用的恢复流程调度器负责继续处理任务。`resume` 使用任务 revision，只能恢复 paused（暂停）任务。执行前 IncidentGuard 再次核对故障仍未解除、采集范围完整、数据未过期，再由 Host 持久提交 control 的许可消费与执行授权提案。
+决定请求保存决定及对应任务变化；已启用的调度器调用 Core 引擎继续处理可执行任务。`resume` 使用任务 revision，只能恢复 paused（暂停）任务。执行前 IncidentGuard 再次核对故障仍未解除、采集范围完整、数据未过期，再由 Host 一次持久提交 Core 的审批消费与任务授权聚合提案。
 
 未知执行结果（Unknown）需要执行证据和独立业务验收证据，由 Host 从绑定节点获取。取消、断连、命令退出码或当前健康状态都不能单独证明执行者已停止或动作结果。核实结果不会重新发放旧许可，也不会重复执行脚本。
 

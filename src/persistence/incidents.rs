@@ -178,8 +178,8 @@ impl From<super::journal::JournalError> for IncidentError {
         }
     }
 }
-impl From<crate::control::operation::CommitError> for IncidentError {
-    fn from(error: crate::control::operation::CommitError) -> Self {
+impl From<recuvora_core::operation::CommitError> for IncidentError {
+    fn from(error: recuvora_core::operation::CommitError) -> Self {
         Self::Corrupt(error.to_string())
     }
 }

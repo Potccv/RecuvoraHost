@@ -1,4 +1,4 @@
-use recuvora_host::control::recovery::approval::{
+use recuvora_core::recovery::approval::{
     ApprovalDecision, ApprovalPolicy, ModelAssessment, ReviewerConfig, ReviewerIdentity,
 };
 use recuvora_host::integrations::recovery::*;
